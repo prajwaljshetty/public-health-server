@@ -1,62 +1,142 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, UploadFile, File, Form
+import os
+import json
+
+# Firebase
+from app.firebase import firestore_db , realtime_db
 
 # Unique :
 import uuid
 
 # User Model :
 from app.models.user import UserRegister , UserLogin 
-from app.models.pickup import PickupRequest
+
 
 router = APIRouter()
 
 # Post :
+
 @router.post("/register")
 def register(user: UserRegister):
 
-    # 1. Generate userid
+    # 1. Check whether user already exists
+    users = firestore_db.collection("users").where(
+        "phoneno", "==", user.phoneno
+    ).limit(1).stream()
+
+    if next(users, None):
+        return {
+            "status": False,
+            "message": "User already exists",
+            "uid": None
+        }
+
+    # 2. Generate uid
     user_id = str(uuid.uuid4())
 
-    # 2. Check whether user already exists
-    # Database logic will be added later
-
     # 3. Save user
-    # Database logic will be added later
+    firestore_db.collection("users").document(user_id).set({
+        "userid": user_id,
+        "username": user.username,
+        "phoneno": user.phoneno,
+        "password": user.password
+    })
 
-    # 4. Return created user
+    # 4. Return response
     return {
-        "userid": user_id
+        "status": True,
+        "message": "Account created successfully",
+        "uid": user_id
     }
 
 @router.post("/login")
 def login(user: UserLogin):
 
-    # 1. Check whether user exists in database
-    # 2. Verify the provided credentials
-    # 3. If credentials are invalid → return error
+    # 1. Find user by phone number
+    users = firestore_db.collection("users").where(
+        "phoneno", "==", user.phoneno
+    ).limit(1).stream()
 
-    user_id = "xyz"
+    existing_user = next(users, None)
 
+    # 2. User does not exist
+    if existing_user is None:
+        return {
+            "status": False,
+            "message": "User does not exist",
+            "uid": None
+        }
+
+    # 3. Get user data
+    user_data = existing_user.to_dict()
+
+    # 4. Check password
+    if user_data["password"] != user.password:
+        return {
+            "status": False,
+            "message": "Incorrect password",
+            "uid": None
+        }
+
+    # 5. Login successful
     return {
-        "userid": user_id,
+        "status": True,
+        "message": "Login successful",
+        "uid": user_data["userid"]
     }
 
+
 @router.post("/requestpickup")
-def request_pickup(pickup: PickupRequest):
+async def request_pickup(
+    userid: str = Form(...),
+    time: str = Form(...),
+    latitude: float = Form(...),
+    longitude: float = Form(...),
+    qna : str = Form(...),
+    image: UploadFile = File(...)
+):
 
-    # 1. Generate pickup id
+    # 1. Check whether user exists
+    user = firestore_db.collection("users").document(userid).get()
 
-    # 2. Check whether user exists in database
-    # Database logic will be added later
+    if not user.exists:
+        return {
+            "status": False,
+            "message": "User does not exist",
+            "pickupid": None
+        }
 
-    # 3. Save pickup request
-    # Database logic will be added later
+    # 2. Generate pickup ID
+    pickup_id = str(uuid.uuid4())
 
-    # 4. Return pickup id
+    qna = [int(x) for x in qna.split(",")]
 
-    pickup_id = "xyz"
+    # 3. Create user image directory
+    os.makedirs("uploads/users", exist_ok=True)
 
+    # 4. Save/replace user's image
+    image_path = f"uploads/users/{userid}.jpg"
+
+    with open(image_path, "wb") as file:
+        file.write(await image.read())
+
+    # 5. Save pickup data
+    realtime_db.reference("pickups/pickup_requests").child(pickup_id).set({
+        "pickupid": pickup_id,
+        "userid": userid,
+        "time": time,
+        "coordinates": {
+            "latitude": latitude,
+            "longitude": longitude
+        },
+        "qna": qna
+    })
+
+    # 6. Return response
     return {
-        "pickup_id": pickup_id
+        "status": True,
+        "message": "Pickup requested successfully",
+        "pickupid": pickup_id
     }
 
 
@@ -66,14 +146,25 @@ def request_pickup(pickup: PickupRequest):
 def getdata(user_id: str):
 
     # 1. Check whether user exists in database
+    user = firestore_db.collection("users").document(user_id).get()
+
+    if not user.exists:
+        return {
+            "status": False,
+            "message": "User does not exist",
+            "userdata": None
+        }
+
     # 2. Get user data from database
+    userdata = user.to_dict()
 
-    userdata = {
-        "userid": user_id,
-        "username": "Public Health",
-        "phoneno": "9999999999"
-    }
-
+    # 3. Return user data
     return {
-        "userdata": userdata
+        "status": True,
+        "message": "User data fetched successfully",
+        "userdata": {
+            "userid": userdata["userid"],
+            "username": userdata["username"],
+            "phoneno": userdata["phoneno"]
+        }
     }
