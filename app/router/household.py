@@ -99,7 +99,7 @@ async def request_pickup(
     qna : str = Form(...),
     image: UploadFile = File(...)
 ):
-
+    print('hello')
     # 1. Check whether user exists
     user = firestore_db.collection("users").document(userid).get()
 

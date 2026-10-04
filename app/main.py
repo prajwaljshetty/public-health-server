@@ -4,7 +4,7 @@ from fastapi import FastAPI
 from app.router import household
 
 # Firebase
-from app.firebase import firestore_db 
+from app.firebase import firestore_db , realtime_db
 
 app = FastAPI()
 
@@ -34,14 +34,28 @@ def getdata(user_id: str):
     # 2. Get user data from database
     userdata = user.to_dict()
 
-    # 3. Return user data
+    # 3. Check whether user already has a pickup request
+    pickups = realtime_db.reference(
+        "pickups/pickup_requests"
+    ).get()
+
+    has_active_pickup = False
+
+    if pickups:
+        for pickup in pickups.values():
+            if pickup.get("userid") == user_id:
+                has_active_pickup = True
+                break
+
+    # 4. Return user data
     return {
         "status": True,
         "message": "User data fetched successfully",
         "userdata": {
             "userid": userdata["userid"],
-           "role": userdata["role"],
+            "role": userdata["role"],
             "username": userdata["username"],
-            "phoneno": userdata["phoneno"]
+            "phoneno": userdata["phoneno"],
+            "hasActivePickup": has_active_pickup
         }
     }
