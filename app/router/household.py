@@ -16,8 +16,8 @@ router = APIRouter()
 
 # Post :
 
-@router.post("/register")
-def register(user: UserRegister):
+@router.post("/create")
+def create(user: UserRegister):
 
     # 1. Check whether user already exists
     users = firestore_db.collection("users").where(
@@ -27,7 +27,7 @@ def register(user: UserRegister):
     if next(users, None):
         return {
             "status": False,
-            "message": "User already exists",
+           "message": "PHONE_NUMBER_ALREADY_REGISTERED",
             "uid": None
         }
 
@@ -37,10 +37,14 @@ def register(user: UserRegister):
     # 3. Save user
     firestore_db.collection("users").document(user_id).set({
         "userid": user_id,
+        "role" :user.role,
         "username": user.username,
         "phoneno": user.phoneno,
         "password": user.password
     })
+
+    print(user.username)
+
 
     # 4. Return response
     return {
@@ -63,7 +67,7 @@ def login(user: UserLogin):
     if existing_user is None:
         return {
             "status": False,
-            "message": "User does not exist",
+            "message": "USER_NOT_FOUND",
             "uid": None
         }
 
@@ -74,7 +78,7 @@ def login(user: UserLogin):
     if user_data["password"] != user.password:
         return {
             "status": False,
-            "message": "Incorrect password",
+            "message": "INCORRECT_PASSWORD",
             "uid": None
         }
 
@@ -140,31 +144,4 @@ async def request_pickup(
     }
 
 
-# Get :
 
-@router.get("/data/{user_id}")
-def getdata(user_id: str):
-
-    # 1. Check whether user exists in database
-    user = firestore_db.collection("users").document(user_id).get()
-
-    if not user.exists:
-        return {
-            "status": False,
-            "message": "User does not exist",
-            "userdata": None
-        }
-
-    # 2. Get user data from database
-    userdata = user.to_dict()
-
-    # 3. Return user data
-    return {
-        "status": True,
-        "message": "User data fetched successfully",
-        "userdata": {
-            "userid": userdata["userid"],
-            "username": userdata["username"],
-            "phoneno": userdata["phoneno"]
-        }
-    }
