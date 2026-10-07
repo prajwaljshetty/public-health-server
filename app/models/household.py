@@ -1,15 +1,13 @@
 from pydantic import BaseModel
 
 
-class UserRegister(BaseModel):
+class HousholdCreate(BaseModel):
     username: str
-    role : str
     phoneno: str
     password: str
 
 
-class UserLogin(BaseModel):
-    role : str
+class HouseholdLogin(BaseModel):
     phoneno: str
     password: str
 
