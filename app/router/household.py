@@ -11,6 +11,9 @@ import uuid
 # User Model :
 from app.models.household import HousholdCreate , HouseholdLogin 
 
+# Filter :
+from google.cloud.firestore_v1.base_query import FieldFilter
+
 router = APIRouter()
 
 # Post :
@@ -20,8 +23,11 @@ def create(user: HousholdCreate):
 
     # 1. Check whether user already exists
     users = firestore_db.collection("households").where(
-        "phoneno", "==", user.phoneno
-    ).limit(1).stream()
+            filter=FieldFilter(
+                "phoneno",
+                "==",
+                user.phoneno
+    )).stream()
 
     if next(users, None):
         return {
@@ -36,7 +42,6 @@ def create(user: HousholdCreate):
     # 3. Save user
     firestore_db.collection("households").document(user_id).set({
         "userid": user_id,
-        "role" :user.role,
         "username": user.username,
         "phoneno": user.phoneno,
         "password": user.password
@@ -57,7 +62,11 @@ def login(user: HouseholdLogin):
 
     # 1. Find user by phone number
     users = firestore_db.collection("households").where(
-        "phoneno", "==", user.phoneno
+        filter=FieldFilter(
+            "phoneno",
+            "==",
+            user.phoneno
+        )
     ).limit(1).stream()
 
     existing_user = next(users, None)
@@ -97,7 +106,6 @@ async def request_pickup(
     qna : str = Form(...),
     image: UploadFile = File(...)
 ):
-    print('hello')
     # 1. Check whether user exists
     user = firestore_db.collection("households").document(userid).get()
 
@@ -176,7 +184,7 @@ def getdata(userid: str):
         "message": "User data fetched successfully",
         "userdata": {
             "userid": userdata["userid"],
-            "role": userdata["role"],
+            "role": 'household',
             "username": userdata["username"],
             "phoneno": userdata["phoneno"],
             "hasActivePickup": has_active_pickup

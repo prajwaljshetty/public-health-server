@@ -4,10 +4,14 @@ from fastapi import APIRouter , WebSocket, WebSocketDisconnect
 from app.models.worker import WorkerLogin
 
 # Firebase :
+from firebase_admin import db
 from app.firebase import firestore_db , realtime_db
 
 # Asychronus :
 import asyncio
+
+# Filter :
+from google.cloud.firestore_v1.base_query import FieldFilter
 
 
 router = APIRouter()
@@ -18,7 +22,7 @@ def login(user : WorkerLogin):
 
     # 1. Check whether user exists in database
     users = firestore_db.collection('workers').where(
-        "workerid","==",user.workerid
+    filter=FieldFilter("workerid", "==", user.workerid)
     ).limit(1).stream()
 
     existing_user = next(users, None)
@@ -90,38 +94,56 @@ async def pickupstream(websocket: WebSocket, userid: str):
 
     print("Connected user:", userid)
 
-    pickup_data = [
-            {
-                "pickupid": "4d3a6f48-80fc-4148-8c0b-7b867d553297",
-                "userid": "1737d704-1380-4bd2-a1dc-d144cf93e658",
-                "time": "2026-10-07 16:07:33.187130",
-                "coordinates": {
-                    "latitude": 13.0647,
-                    "longitude": 74.9951
-                },
-                "qna": [1, 0, 1],
-            },
-            {
-                "pickupid": "7a1b2c3d-4567-8901-abcd-ef1234567890",
-                "userid": "2858e815-2491-5cd3-b2ee-e255df74f769",
-                "time": "2026-10-08 14:30:00",
-                "coordinates": {
-                    "latitude": 13.0712,
-                    "longitude": 74.9918
-                },
-                "qna": [1, 1, 0],
-            },
-        ]
+    pickup_DB = db.reference("pickups/pickup_requests")
+
+    queue = asyncio.Queue()
+
+    loop = asyncio.get_running_loop()
+
+    def pickup_listener(event):
+        pickup_data = pickup_DB.get()
+
+        if pickup_data is None:
+            pickup_data = {}
+
+        asyncio.run_coroutine_threadsafe(
+            queue.put(pickup_data),
+            loop
+        )
+
+    listener = pickup_DB.listen(pickup_listener)
 
     try:
         while True:
-            await websocket.send_json(pickup_data)
-            await asyncio.sleep(5)
-            message = await websocket.receive_text()
-            if message == "logout":
-                print("User logged out : ", userid)
-                break
+
+            pickup_data = await queue.get()
+
+            pickup_list = []
+
+            for pickupid, pickup in pickup_data.items():
+
+                pickup_userid = pickup["userid"]
+
+                user = firestore_db.collection("households").document(
+                    pickup_userid
+                ).get()
+
+                if user.exists:
+
+                    userdata = user.to_dict()
+
+                    pickup_item = {
+                        "pickupid": pickupid,
+                        "userid": pickup_userid,
+                        "username": userdata["username"],
+                        "time": pickup["time"],
+                        "coordinates": pickup["coordinates"],
+                        "qna": pickup["qna"],
+                    }
+
+                    pickup_list.append(pickup_item)
+
+            await websocket.send_json(pickup_list)
 
     except WebSocketDisconnect:
-        print("Disconnected user : ", userid)
-
+        print("Disconnected user:", userid)
