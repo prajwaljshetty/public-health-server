@@ -36,7 +36,7 @@ def create(user: HousholdCreate):
     # 3. Save user
     firestore_db.collection("households").document(user_id).set({
         "userid": user_id,
-        "role" :user.role,
+        "role": "household",
         "username": user.username,
         "phoneno": user.phoneno,
         "password": user.password
