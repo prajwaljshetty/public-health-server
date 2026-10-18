@@ -92,6 +92,7 @@ async def pickupstream(websocket: WebSocket, userid: str):
 
     await websocket.accept()
 
+
     print("Connected user:", userid)
 
     pickup_DB = db.reference("pickups/pickup_requests")
@@ -111,15 +112,18 @@ async def pickupstream(websocket: WebSocket, userid: str):
             loop
         )
 
-    listener = pickup_DB.listen(pickup_listener)
+    async def receive():
+        while True :
+            message = await websocket.receive_text()
+            if message == "logout" : 
+                return
 
-    try:
+    async def pickup():
         while True:
-
             pickup_data = await queue.get()
 
             pickup_list = []
-
+        
             for pickupid, pickup in pickup_data.items():
 
                 pickup_userid = pickup["userid"]
@@ -137,7 +141,7 @@ async def pickupstream(websocket: WebSocket, userid: str):
                         "userid": pickup_userid,
                         "username": userdata["username"],
                         "time": pickup["time"],
-                        "coordinates": pickup["coordinates"],
+                        "coordinates": pickup["coordinate"],
                         "qna": pickup["qna"],
                     }
 
@@ -145,5 +149,37 @@ async def pickupstream(websocket: WebSocket, userid: str):
 
             await websocket.send_json(pickup_list)
 
+    listener = pickup_DB.listen(pickup_listener)
+
+    message_task = asyncio.create_task(receive())
+    pickup_task = asyncio.create_task(pickup())
+
+    try:
+        done, pending = await asyncio.wait(
+            [message_task, pickup_task],
+            return_when=asyncio.FIRST_COMPLETED
+        )
+
+        for task in pending:
+            task.cancel()
+
+        await asyncio.gather(*pending, return_exceptions=True)
+
+        for task in done:
+            task.result()
+
+        if message_task in done:
+            print("Worker logged out:", userid)
+
     except WebSocketDisconnect:
         print("Disconnected user:", userid)
+
+    finally:
+        message_task.cancel()
+        pickup_task.cancel()
+        
+        await asyncio.gather(
+            message_task, pickup_task,
+            return_exceptions=True
+        )
+        listener.close()

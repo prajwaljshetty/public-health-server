@@ -1,6 +1,7 @@
 from fastapi import APIRouter, UploadFile, File, Form
 import os
 import json
+from firebase_admin import db
 
 # Firebase :
 from app.firebase import firestore_db , realtime_db
@@ -9,7 +10,7 @@ from app.firebase import firestore_db , realtime_db
 import uuid
 
 # User Model :
-from app.models.household import HousholdCreate , HouseholdLogin 
+from app.models.household import HousholdCreate , HouseholdLogin , HouseholdRequestData
 
 # Filter :
 from google.cloud.firestore_v1.base_query import FieldFilter
@@ -97,17 +98,17 @@ def login(user: HouseholdLogin):
         "uid": user_data["userid"]
     }
 
+from datetime import timezone
+import uuid
+
 @router.post("/requestpickup")
 async def request_pickup(
-    userid: str = Form(...),
-    time: str = Form(...),
-    latitude: float = Form(...),
-    longitude: float = Form(...),
-    qna : str = Form(...),
-    image: UploadFile = File(...)
+    household_request_data: HouseholdRequestData
 ):
-    # 1. Check whether user exists
-    user = firestore_db.collection("households").document(userid).get()
+    # 1. Check whether the household exists
+    user = firestore_db.collection("households").document(
+        household_request_data.userid
+    ).get()
 
     if not user.exists:
         return {
@@ -119,27 +120,22 @@ async def request_pickup(
     # 2. Generate pickup ID
     pickup_id = str(uuid.uuid4())
 
-    qna = [int(x) for x in qna.split(",")]
 
-    # 3. Create user image directory
-    os.makedirs("uploads/households", exist_ok=True)
-
-    # 4. Save/replace user's image
-    image_path = f"uploads/households/{userid}.jpg"
-
-    with open(image_path, "wb") as file:
-        file.write(await image.read())
+    # 4. Convert datetime to a string
+    pickup_time = household_request_data.time.isoformat()
 
     # 5. Save pickup data
-    realtime_db.reference("pickups/pickup_requests").child(pickup_id).set({
+    realtime_db.reference("pickups/pickup_requests").child(
+        pickup_id
+    ).set({
         "pickupid": pickup_id,
-        "userid": userid,
-        "time": time,
-        "coordinates": {
-            "latitude": latitude,
-            "longitude": longitude
+        "userid": household_request_data.userid,
+        "time": pickup_time,
+        "coordinate": {
+            "latitude": household_request_data.coordinate.latitude,
+            "longitude": household_request_data.coordinate.longitude,
         },
-        "qna": qna
+        "qna": household_request_data.qna
     })
 
     # 6. Return response
@@ -148,6 +144,7 @@ async def request_pickup(
         "message": "Pickup requested successfully",
         "pickupid": pickup_id
     }
+
 
 @router.get("/data/{userid}")
 def getdata(userid: str):

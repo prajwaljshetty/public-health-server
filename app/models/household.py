@@ -1,5 +1,6 @@
 from pydantic import BaseModel
-
+from datetime import datetime
+from .coordinate import Coordinate
 
 class HousholdCreate(BaseModel):
     username: str
@@ -10,5 +11,12 @@ class HousholdCreate(BaseModel):
 class HouseholdLogin(BaseModel):
     phoneno: str
     password: str
+
+class HouseholdRequestData(BaseModel):
+    userid : str
+    time : datetime
+    coordinate : Coordinate
+    qna: list[int]
+
 
 
