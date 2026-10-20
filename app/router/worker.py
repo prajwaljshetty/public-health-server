@@ -13,9 +13,7 @@ import asyncio
 # Filter :
 from google.cloud.firestore_v1.base_query import FieldFilter
 
-
 router = APIRouter()
-
 
 @router.post("/login")
 def login(user : WorkerLogin):
@@ -126,7 +124,7 @@ async def pickupstream(websocket: WebSocket, userid: str):
         
             for pickupid, pickup in pickup_data.items():
 
-                pickup_userid = pickup["userid"]
+                pickup_userid = pickup["user_id"]
 
                 user = firestore_db.collection("households").document(
                     pickup_userid
@@ -138,8 +136,8 @@ async def pickupstream(websocket: WebSocket, userid: str):
 
                     pickup_item = {
                         "pickupid": pickupid,
-                        "userid": pickup_userid,
-                        "username": userdata["username"],
+                        "user_id": pickup_userid,
+                        "user_name": userdata["user_name"],
                         "time": pickup["time"],
                         "coordinates": pickup["coordinate"],
                         "qna": pickup["qna"],

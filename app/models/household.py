@@ -13,10 +13,6 @@ class HouseholdLogin(BaseModel):
     password: str
 
 class HouseholdRequestData(BaseModel):
-    userid : str
     time : datetime
     coordinate : Coordinate
     qna: list[int]
-
-
-

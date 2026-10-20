@@ -1,10 +1,25 @@
-from fastapi import APIRouter, UploadFile, File, Form
-import os
-import json
-from firebase_admin import db
+from fastapi import APIRouter
 
 # Firebase :
+from firebase_admin import db
 from app.firebase import firestore_db , realtime_db
+
+# HTTP :
+from fastapi import Depends , HTTPException, status
+
+# Token Creation and Validations :
+from app.auth import (
+    create_acess_token ,
+    create_refresh_token ,
+    get_current_user , 
+    get_refresh_token
+)
+
+# Password Hasher :
+from app.hasher import (
+    hash_password , 
+    verify_password
+)
 
 # Unique :
 import uuid
@@ -18,11 +33,9 @@ from google.cloud.firestore_v1.base_query import FieldFilter
 router = APIRouter()
 
 # Post :
-
 @router.post("/create")
 def create(user: HousholdCreate):
-
-    # 1. Check whether user already exists
+    # Check whether user already exists
     users = firestore_db.collection("households").where(
             filter=FieldFilter(
                 "phoneno",
@@ -30,38 +43,46 @@ def create(user: HousholdCreate):
                 user.phoneno
     )).stream()
 
+    # User does exist
     if next(users, None):
         return {
             "status": False,
             "message": "PHONE_NUMBER_ALREADY_REGISTERED",
-            "uid": None
+            "user_id": None
         }
 
-    # 2. Generate uid
+    # Generate uid
     user_id = str(uuid.uuid4())
 
-    # 3. Save user
+    # Hash password
+    password = hash_password(user.password)
+
+    # Save household
     firestore_db.collection("households").document(user_id).set({
-        "userid": user_id,
-        "username": user.username,
+        "user_id": user_id,
+        "user_name": user.username,
         "phoneno": user.phoneno,
-        "password": user.password
+        "password": password
     })
 
-    print(user.username)
+    # Generate Access Token
+    access_token = create_acess_token(user_id= user_id)
 
+    # Generate Refresh Token
+    refresh_token = create_refresh_token(user_id= user_id)
 
-    # 4. Return response
+    # Return response
     return {
         "status": True,
         "message": "Account created successfully",
-        "uid": user_id
+        "user_id": user_id,
+        "access_token" : access_token ,
+        "refresh_token" : refresh_token
     }
 
 @router.post("/login")
 def login(user: HouseholdLogin):
-
-    # 1. Find user by phone number
+    # Check whether user exists
     users = firestore_db.collection("households").where(
         filter=FieldFilter(
             "phoneno",
@@ -72,97 +93,114 @@ def login(user: HouseholdLogin):
 
     existing_user = next(users, None)
 
-    # 2. User does not exist
+    # User does not exist
     if existing_user is None:
         return {
             "status": False,
             "message": "USER_NOT_FOUND",
-            "uid": None
+            "user_id": None
         }
 
-    # 3. Get user data
+    # Get user data
     user_data = existing_user.to_dict()
 
-    # 4. Check password
-    if user_data["password"] != user.password:
+    user_id = user_data["user_id"]
+
+    # Check password with Hashed Password
+    if not verify_password(hashed_password= user_data["password"] , password = user.password):
         return {
             "status": False,
             "message": "INCORRECT_PASSWORD",
-            "uid": None
+            "user_id": None
         }
+    
+    # Generate Access Token
+    access_token = create_acess_token(user_id= user_id)
 
-    # 5. Login successful
+    # Generate Refresh Token
+    refresh_token = create_refresh_token(user_id= user_id)
+
+    # Return response
     return {
         "status": True,
         "message": "Login successful",
-        "uid": user_data["userid"]
+        "user_id": user_id,
+        "access_token" : access_token ,
+        "refresh_token" : refresh_token
     }
 
-from datetime import timezone
+
+from fastapi import APIRouter, Depends, HTTPException, status
 import uuid
 
 @router.post("/requestpickup")
 async def request_pickup(
-    household_request_data: HouseholdRequestData
+    household_request_data: HouseholdRequestData,
+    user_data: dict = Depends(get_current_user),
 ):
-    # 1. Check whether the household exists
-    user = firestore_db.collection("households").document(
-        household_request_data.userid
-    ).get()
+    # Get authenticated household ID from the JWT
+    user_id = user_data["sub"]
+
+    # Verify household exists
+    user = (
+        firestore_db.collection("households")
+        .document(user_id)
+        .get()
+    )
 
     if not user.exists:
-        return {
-            "status": False,
-            "message": "User does not exist",
-            "pickupid": None
-        }
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="HOUSEHOLD_NOT_FOUND",
+        )
 
-    # 2. Generate pickup ID
+    # Generate pickup ID
     pickup_id = str(uuid.uuid4())
 
-
-    # 4. Convert datetime to a string
+    # Normalize timestamp
     pickup_time = household_request_data.time.isoformat()
 
-    # 5. Save pickup data
-    realtime_db.reference("pickups/pickup_requests").child(
-        pickup_id
-    ).set({
+    # Save pickup request
+    realtime_db.reference(
+        "pickups/pickup_requests"
+    ).child(pickup_id).set({
         "pickupid": pickup_id,
-        "userid": household_request_data.userid,
+        "user_id": user_id,
         "time": pickup_time,
         "coordinate": {
             "latitude": household_request_data.coordinate.latitude,
             "longitude": household_request_data.coordinate.longitude,
         },
-        "qna": household_request_data.qna
+        "qna": household_request_data.qna,
+        "status": "requested",
     })
 
-    # 6. Return response
     return {
         "status": True,
         "message": "Pickup requested successfully",
-        "pickupid": pickup_id
+        "pickupid": pickup_id,
     }
 
+@router.get("/data")
+def get_data(user_data: dict = Depends(get_current_user)):
 
-@router.get("/data/{userid}")
-def getdata(userid: str):
+    # Get user ID
+    user_id = user_data["sub"]
 
-    # 1. Check whether user exists in database
-    user = firestore_db.collection("households").document(userid).get()
+    # Check user exists
+    user = firestore_db.collection("households").document(user_id).get()
 
     if not user.exists:
         return {
             "status": False,
             "message": "User does not exist",
-            "userdata": None
+            "user_data": None
         }
 
-    # 2. Get user data from database
-    userdata = user.to_dict()
+    # Get user data from Firestore
+    household_data = user.to_dict()
 
-    # 3. Check whether user already has a pickup request
+    # Check whether the user already has an active pickup request
     pickups = realtime_db.reference(
         "pickups/pickup_requests"
     ).get()
@@ -171,22 +209,87 @@ def getdata(userid: str):
 
     if pickups:
         for pickup in pickups.values():
-            if pickup.get("userid") == userid:
+            if pickup.get("user_id") == user_id:
                 has_active_pickup = True
                 break
 
-    # 4. Return user data
+    # Return household data
     return {
         "status": True,
         "message": "User data fetched successfully",
-        "userdata": {
-            "userid": userdata["userid"],
-            "role": 'household',
-            "username": userdata["username"],
-            "phoneno": userdata["phoneno"],
-            "hasActivePickup": has_active_pickup
+        "user_data": {
+            "user_id": user_id,
+            "role": "household",
+            "user_name": household_data["user_name"],
+            "phoneno": household_data["phoneno"],
+            "has_active_pickup": has_active_pickup
         }
     }
 
+@router.get("/pickupdata")
+def get_pickup_data(user_data : dict = Depends(get_current_user)):
+    # Get household ID
+    user_id = user_data["sub"]
 
+    # Check whether user exists
+    user = firestore_db.collection("households").document(user_id).get()
 
+    if not user.exists:
+        return {
+            "status": False,
+            "message": "User does not exist",
+            "pickupdata": None
+        }
+
+    # Fetch pickup data
+    pickups = (
+        realtime_db.reference("pickups/pickup_requests")
+        .order_by_child("user_id")
+        .equal_to(user_id)
+        .get()
+    )
+
+    # Pickup data does not exist
+    if not pickups:
+        return {
+            "status": True,
+            "message": "No pickup request found",
+            "pickupdata": None
+        }
+
+    pickupdata = next(iter(pickups.values()))
+
+    # Return pickup details
+    return {
+        "status": True,
+        "message": "Pickup data fetched successfully",
+        "pickupdata": pickupdata
+    }
+
+@router.post("/refresh")
+def get_access_token(
+    request_data: dict = Depends(get_refresh_token)
+):
+    # Get user ID from validated refresh token
+    user_id = request_data["sub"]
+
+    # Check whether the household exists
+    user = firestore_db.collection("households").document(user_id).get()
+
+    if not user.exists:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="USER_NO_LONGER_EXIST",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    # Generate a new access token
+    access_token = create_acess_token(user_id=user_id)
+
+    return {
+        "status": True,
+        "message": "Access token refreshed successfully",
+        "access_token": access_token,
+        "token_type": "bearer",
+        "expires_in": 900
+    }
