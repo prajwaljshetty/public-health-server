@@ -1,8 +1,12 @@
-from fastapi import APIRouter
+from fastapi import APIRouter , WebSocket , WebSocketDisconnect
 
 # Firebase :
 from firebase_admin import db
 from app.firebase import firestore_db , realtime_db
+
+
+# Asychronus :
+import asyncio
 
 # HTTP :
 from fastapi import Depends , HTTPException, status
@@ -11,6 +15,7 @@ from fastapi import Depends , HTTPException, status
 from app.auth import (
     create_acess_token ,
     create_refresh_token ,
+    validate_token ,
     get_current_user , 
     get_refresh_token
 )
@@ -129,17 +134,13 @@ def login(user: HouseholdLogin):
         "refresh_token" : refresh_token
     }
 
-
-from fastapi import APIRouter, Depends, HTTPException, status
-import uuid
-
-@router.post("/requestpickup")
+@router.post("/pickup/request")
 async def request_pickup(
     household_request_data: HouseholdRequestData,
-    user_data: dict = Depends(get_current_user),
+    payload: dict = Depends(get_current_user),
 ):
     # Get authenticated household ID from the JWT
-    user_id = user_data["sub"]
+    user_id = payload["sub"]
 
     # Verify household exists
     user = (
@@ -162,7 +163,7 @@ async def request_pickup(
 
     # Save pickup request
     realtime_db.reference(
-        "pickups/pickup_requests"
+        "pickups/requests"
     ).child(pickup_id).set({
         "pickupid": pickup_id,
         "user_id": user_id,
@@ -175,6 +176,14 @@ async def request_pickup(
         "status": "requested",
     })
 
+    #Update pickup status 
+    realtime_db.reference(
+        "pickups/status"
+    ).child(pickup_id).set({
+        "user_id": user_id ,
+        "status" : "requested"
+    })
+
     return {
         "status": True,
         "message": "Pickup requested successfully",
@@ -182,10 +191,10 @@ async def request_pickup(
     }
 
 @router.get("/data")
-def get_data(user_data: dict = Depends(get_current_user)):
+def get_data(payload: dict = Depends(get_current_user)):
 
     # Get user ID
-    user_id = user_data["sub"]
+    user_id = payload["sub"]
 
     # Check user exists
     user = firestore_db.collection("households").document(user_id).get()
@@ -201,17 +210,24 @@ def get_data(user_data: dict = Depends(get_current_user)):
     household_data = user.to_dict()
 
     # Check whether the user already has an active pickup request
-    pickups = realtime_db.reference(
-        "pickups/pickup_requests"
-    ).get()
+    pickups = realtime_db.reference("pickups/requests").get()
 
-    has_active_pickup = False
+    pickup_id = None
+    current_status = "idle"
 
     if pickups:
-        for pickup in pickups.values():
+        for key, pickup in pickups.items():
             if pickup.get("user_id") == user_id:
-                has_active_pickup = True
+                pickup_id = key
                 break
+
+    if pickup_id:
+        pickup_status = realtime_db.reference(
+            f"pickups/status/{pickup_id}"
+        ).get()
+
+        if pickup_status:
+            current_status = pickup_status.get("status", "idle")
 
     # Return household data
     return {
@@ -222,14 +238,14 @@ def get_data(user_data: dict = Depends(get_current_user)):
             "role": "household",
             "user_name": household_data["user_name"],
             "phoneno": household_data["phoneno"],
-            "has_active_pickup": has_active_pickup
+            "pickup_status" : current_status
         }
     }
 
-@router.get("/pickupdata")
-def get_pickup_data(user_data : dict = Depends(get_current_user)):
-    # Get household ID
-    user_id = user_data["sub"]
+@router.get("/pickup/data")
+def get_pickup_data(payload: dict = Depends(get_current_user)):
+    # Get user ID
+    user_id = payload["sub"]
 
     # Check whether user exists
     user = firestore_db.collection("households").document(user_id).get()
@@ -243,7 +259,7 @@ def get_pickup_data(user_data : dict = Depends(get_current_user)):
 
     # Fetch pickup data
     pickups = (
-        realtime_db.reference("pickups/pickup_requests")
+        realtime_db.reference("pickups/requests")
         .order_by_child("user_id")
         .equal_to(user_id)
         .get()
@@ -254,7 +270,7 @@ def get_pickup_data(user_data : dict = Depends(get_current_user)):
         return {
             "status": True,
             "message": "No pickup request found",
-            "pickupdata": None
+            "pickup_data": None
         }
 
     pickupdata = next(iter(pickups.values()))
@@ -263,14 +279,14 @@ def get_pickup_data(user_data : dict = Depends(get_current_user)):
     return {
         "status": True,
         "message": "Pickup data fetched successfully",
-        "pickupdata": pickupdata
+        "pickup_data": pickupdata
     }
 
 @router.post("/refresh")
 def get_access_token(
     request_data: dict = Depends(get_refresh_token)
 ):
-    # Get user ID from validated refresh token
+    # Get user ID
     user_id = request_data["sub"]
 
     # Check whether the household exists
@@ -293,3 +309,132 @@ def get_access_token(
         "token_type": "bearer",
         "expires_in": 900
     }
+@router.websocket("/pickup/status/{pickup_id}")
+async def pickup_status_stream(
+    websocket: WebSocket,
+    pickup_id: str,
+):
+    await websocket.accept()
+
+    user_id = None
+    listener = None
+
+    try:
+        token = await asyncio.wait_for(
+            websocket.receive_text(),
+            timeout=10,
+        )
+
+        payload = validate_token(token, "access")
+
+        if not payload:
+            await websocket.close(
+                code=1008,
+                reason="Invalid access token",
+            )
+            return
+
+        user_id = payload["sub"]
+
+        pickup_status_db = db.reference(
+            f"pickups/status/{pickup_id}"
+        )
+
+        pickup_owner_db = db.reference(
+            f"pickups/requests/{pickup_id}/user_id"
+        )
+
+        initial_data = pickup_status_db.get()
+        owner_id = pickup_owner_db.get()
+
+        if owner_id != user_id:
+            await websocket.send_json({
+                "status": False,
+                "message": "Unauthorized",
+                "pickup_data": {},
+            })
+            await websocket.close(
+                code=1008,
+                reason="Unauthorized",
+            )
+            return
+
+        if isinstance(initial_data, dict):
+            initial_status = initial_data.get("status")
+        elif isinstance(initial_data, str):
+            initial_status = initial_data
+        else:
+            await websocket.send_json({
+                "status": False,
+                "message": "Pickup not found",
+                "pickup_data": {},
+            })
+            await websocket.close(
+                code=1008,
+                reason="Pickup not found",
+            )
+            return
+
+        if not isinstance(initial_status, str):
+            await websocket.close(
+                code=1008,
+                reason="Invalid pickup status",
+            )
+            return
+
+        await websocket.send_json({
+            "status": True,
+            "pickup_data": {
+                "pickup_id": pickup_id,
+                "status": initial_status,
+            },
+        })
+
+        queue = asyncio.Queue()
+        loop = asyncio.get_running_loop()
+
+        def pickup_status_listener(event):
+            data = event.data
+
+            if isinstance(data, dict):
+                status = data.get("status")
+            elif isinstance(data, str):
+                status = data
+            else:
+                return
+
+            if not isinstance(status, str):
+                return
+
+            asyncio.run_coroutine_threadsafe(
+                queue.put(status),
+                loop,
+            )
+
+        listener = pickup_status_db.listen(
+            pickup_status_listener
+        )
+
+        while True:
+            pickup_status = await queue.get()
+
+            await websocket.send_json({
+                "status": True,
+                "pickup_data": {
+                    "pickup_id": pickup_id,
+                    "status": pickup_status,
+                },
+            })
+
+    except asyncio.TimeoutError:
+        await websocket.close(
+            code=1008,
+            reason="Authentication timeout",
+        )
+
+    except WebSocketDisconnect:
+        pass
+
+    finally:
+        if listener is not None:
+            listener.close()

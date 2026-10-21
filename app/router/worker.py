@@ -52,7 +52,7 @@ def login(user : WorkerLogin):
     }
 
 @router.get("/data/{userid}")
-def getdata(userid : str):
+def get_data(userid : str):
 
     # check whether user exist
     user = firestore_db.collection("workers").document(userid).get()
@@ -80,7 +80,7 @@ def getdata(userid : str):
         }}
 
 @router.websocket("/pickups/{userid}")
-async def pickupstream(websocket: WebSocket, userid: str):
+async def pickup_stream(websocket: WebSocket, userid: str):
 
     user = firestore_db.collection("workers").document(userid).get()
 
@@ -93,7 +93,7 @@ async def pickupstream(websocket: WebSocket, userid: str):
 
     print("Connected user:", userid)
 
-    pickup_DB = db.reference("pickups/pickup_requests")
+    pickup_DB = db.reference("pickups/requests")
 
     queue = asyncio.Queue()
 
