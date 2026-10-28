@@ -67,7 +67,7 @@ def get_refresh_token( credentials : HTTPAuthorizationCredentials = Depends(secu
     #return payload
     return payload
     
-def create_acess_token(user_id: str) -> str:
+def create_access_token(user_id: str) -> str:
     # Token expiration: 15 minutes
     now = datetime.now(timezone.utc)
     expire = now + timedelta(

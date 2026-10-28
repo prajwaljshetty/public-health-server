@@ -13,7 +13,7 @@ from fastapi import Depends , HTTPException, status
 
 # Token Creation and Validations :
 from app.auth import (
-    create_acess_token ,
+    create_access_token ,
     create_refresh_token ,
     validate_token ,
     get_current_user , 
@@ -71,7 +71,7 @@ def create(user: HousholdCreate):
     })
 
     # Generate Access Token
-    access_token = create_acess_token(user_id= user_id)
+    access_token = create_access_token(user_id= user_id)
 
     # Generate Refresh Token
     refresh_token = create_refresh_token(user_id= user_id)
@@ -109,21 +109,22 @@ def login(user: HouseholdLogin):
     # Get user data
     user_data = existing_user.to_dict()
 
+    # Extract user password
     user_id = user_data["user_id"]
 
     # Check password with Hashed Password
-    if not verify_password(hashed_password= user_data["password"] , password = user.password):
+    if not verify_password(hashed_password = user_id , password = user.password):
         return {
             "status": False,
             "message": "INCORRECT_PASSWORD",
             "user_id": None
         }
-    
-    # Generate Access Token
-    access_token = create_acess_token(user_id= user_id)
 
     # Generate Refresh Token
     refresh_token = create_refresh_token(user_id= user_id)
+    
+    # Generate Access Token
+    access_token = create_access_token(user_id= user_id)
 
     # Return response
     return {
@@ -132,6 +133,58 @@ def login(user: HouseholdLogin):
         "user_id": user_id,
         "access_token" : access_token ,
         "refresh_token" : refresh_token
+    }
+
+@router.get("/data")
+def get_data(payload: dict = Depends(get_current_user)):
+
+    # Get user ID
+    user_id = payload["sub"]
+
+    # Check user exists
+    user = firestore_db.collection("households").document(user_id).get()
+
+    if not user.exists:
+        return {
+            "status": False,
+            "message": "User does not exist",
+            "user_data": None
+        }
+
+    # Get user data from Firestore
+    user_data = user.to_dict()
+
+    # Check whether the user already has an active pickup request
+    pickups = realtime_db.reference("pickups/requests").get()
+
+    pickup_id = None
+    current_status = "idle"
+
+    if pickups:
+        for key, pickup in pickups.items():
+            if pickup.get("user_id") == user_id:
+                pickup_id = key
+                break
+
+    if pickup_id:
+        pickup_status = realtime_db.reference(
+            f"pickups/status/{pickup_id}"
+        ).get()
+
+        if pickup_status:
+            current_status = pickup_status.get("status", "idle")
+
+    # Return household data
+    return {
+        "status": True,
+        "message": "User data fetched successfully",
+        "user_data": {
+            "user_id": user_id,
+            "role": "household",
+            "user_name": user_data["user_name"],
+            "phoneno": user_data["phoneno"],
+            "pickup_status" : current_status
+        }
     }
 
 @router.post("/pickup/request")
@@ -188,58 +241,6 @@ async def request_pickup(
         "status": True,
         "message": "Pickup requested successfully",
         "pickupid": pickup_id,
-    }
-
-@router.get("/data")
-def get_data(payload: dict = Depends(get_current_user)):
-
-    # Get user ID
-    user_id = payload["sub"]
-
-    # Check user exists
-    user = firestore_db.collection("households").document(user_id).get()
-
-    if not user.exists:
-        return {
-            "status": False,
-            "message": "User does not exist",
-            "user_data": None
-        }
-
-    # Get user data from Firestore
-    household_data = user.to_dict()
-
-    # Check whether the user already has an active pickup request
-    pickups = realtime_db.reference("pickups/requests").get()
-
-    pickup_id = None
-    current_status = "idle"
-
-    if pickups:
-        for key, pickup in pickups.items():
-            if pickup.get("user_id") == user_id:
-                pickup_id = key
-                break
-
-    if pickup_id:
-        pickup_status = realtime_db.reference(
-            f"pickups/status/{pickup_id}"
-        ).get()
-
-        if pickup_status:
-            current_status = pickup_status.get("status", "idle")
-
-    # Return household data
-    return {
-        "status": True,
-        "message": "User data fetched successfully",
-        "user_data": {
-            "user_id": user_id,
-            "role": "household",
-            "user_name": household_data["user_name"],
-            "phoneno": household_data["phoneno"],
-            "pickup_status" : current_status
-        }
     }
 
 @router.get("/pickup/data")
@@ -300,7 +301,7 @@ def get_access_token(
         )
 
     # Generate a new access token
-    access_token = create_acess_token(user_id=user_id)
+    access_token = create_access_token(user_id=user_id)
 
     return {
         "status": True,
@@ -309,6 +310,7 @@ def get_access_token(
         "token_type": "bearer",
         "expires_in": 900
     }
+
 @router.websocket("/pickup/status/{pickup_id}")
 async def pickup_status_stream(
     websocket: WebSocket,
@@ -433,7 +435,7 @@ async def pickup_status_stream(
         )
 
     except WebSocketDisconnect:
-        pass
+        print("Disconnected user:", user_id)
 
     finally:
         if listener is not None:
