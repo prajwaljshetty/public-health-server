@@ -13,7 +13,8 @@ def hash_password(password: str) -> str:
 
 def verify_password(password: str , hashed_password: str) -> bool:
     try :
-        # Hash(Password) == hashed_password
+        # Hash(Password , salt) == hashed_password
+       
         return password_hasher.verify(hash = hashed_password , password = password)
     except ( VerificationError , VerifyMismatchError ):
         return False
