@@ -1,5 +1,11 @@
 from pydantic import BaseModel
 
+class WorkerRegister(BaseModel):
+    worker_id: str
+    user_name: str
+    phoneno: str
+    password: str
+
 class WorkerLogin(BaseModel):
-    workerid : str
+    worker_id : str
     password : str

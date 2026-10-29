@@ -109,16 +109,17 @@ def login(user: HouseholdLogin):
     # Get user data
     user_data = existing_user.to_dict()
 
-    # Extract user password
-    user_id = user_data["user_id"]
 
     # Check password with Hashed Password
-    if not verify_password(hashed_password = user_id , password = user.password):
+    if not verify_password(hashed_password = user_data["password"] , password = user.password):
         return {
             "status": False,
             "message": "INCORRECT_PASSWORD",
             "user_id": None
         }
+
+    # Extract user password
+    user_id = user_data["user_id"]
 
     # Generate Refresh Token
     refresh_token = create_refresh_token(user_id= user_id)

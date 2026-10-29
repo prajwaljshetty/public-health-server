@@ -1,7 +1,7 @@
 from fastapi import APIRouter , WebSocket, WebSocketDisconnect
 
 # Model :
-from app.models.worker import WorkerLogin
+from app.models.worker import WorkerRegister , WorkerLogin
 
 # Firebase :
 from firebase_admin import db
@@ -15,6 +15,9 @@ from google.cloud.firestore_v1.base_query import FieldFilter
 
 # HTTP :
 from fastapi import Depends , HTTPException, status
+
+# Unique :
+import uuid
 
 # Token Creation and Validations :
 from app.auth import (
@@ -33,42 +36,94 @@ from app.hasher import (
 
 router = APIRouter()
 
+@router.post("/createaccount")
+def create_account(worker: WorkerRegister):
+
+    # Check whether worker already exists
+    users = firestore_db.collection("workers").where(
+        filter=FieldFilter(
+            "worker_id",
+            "==",
+            worker.worker_id
+        )
+    ).limit(1).stream()
+
+    if next(users, None):
+        return {
+            "status": False,
+            "message": "WORKER_ALREADY_EXISTS",
+            "user_id": None
+        }
+
+    # Generate user ID
+    user_id = str(uuid.uuid4())
+
+    # Hash password
+    password = hash_password(worker.password)
+
+    # Save worker
+    firestore_db.collection("workers").document(user_id).set({
+        "user_id": user_id,
+        "worker_id": worker.worker_id,
+        "user_name": worker.user_name,
+        "phoneno": worker.phoneno,
+        "password": password,
+        "role": "worker"
+    })
+
+    # Generate Access Token
+    access_token = create_access_token(user_id=user_id)
+
+    # Generate Refresh Token
+    refresh_token = create_refresh_token(user_id=user_id)
+
+    # Return response
+    return {
+        "status": True,
+        "message": "Account created successfully",
+        "user_id": user_id,
+        "access_token": access_token,
+        "refresh_token": refresh_token
+    }
+
 @router.post("/login")
 def login(user: WorkerLogin):
-
+    
     # Find worker by worker ID
     users = firestore_db.collection("workers").where(
-        filter=FieldFilter("workerid", "==", user.workerid)
+        filter=FieldFilter("worker_id", "==", user.worker_id)
     ).limit(1).stream()
+
 
     existing_user = next(users, None)
 
-    # Validate worker and password
+    # User does not exist
     if existing_user is None:
-        raise HTTPException(
-            status_code=401,
-            detail="INVALID_CREDENTIALS"
-        )
+        return {
+            "status": False,
+            "message": "USER_NOT_FOUND",
+            "user_id": None
+        }
 
     user_data = existing_user.to_dict()
 
     print(user.password)
 
-    if not verify_password(
-        hashed_password= user_data["password"],
-        password=user.password
-    ):
-        raise HTTPException(
-            status_code=401,
-            detail="INVALID_CREDENTIALS"
-        )
+    # Check password with Hashed Password
+    if not verify_password(hashed_password = user_data["password"] , password = user.password):
+        return {
+            "status": False,
+            "message": "INCORRECT_PASSWORD",
+            "user_id": None
+        }
 
-    # Use Firestore document ID consistently
-    user_id = existing_user.id
+    user_id = user_data['user_id']
 
     # Generate tokens
     access_token = create_access_token(user_id=user_id)
     refresh_token = create_refresh_token(user_id=user_id)
+
+    print(access_token,refresh_token)
 
     return {
         "status": True,
@@ -83,6 +138,8 @@ def get_data(payload: dict = Depends(get_current_user)):
     # Get user ID from JWT payload
     user_id = payload["sub"]
 
+    print(user_id)
+
     # Fetch worker document
     user = firestore_db.collection("workers").document(user_id).get()
 
@@ -91,7 +148,7 @@ def get_data(payload: dict = Depends(get_current_user)):
         return {
             "status": False,
             "message": "User does not exist",
-            "userdata": None
+            "user_data": None
         }
 
     # Extract worker data
@@ -100,7 +157,7 @@ def get_data(payload: dict = Depends(get_current_user)):
     return {
         "status": True,
         "message": "User data fetched successfully",
-        "userdata": {
+        "user_data": {
             "user_id": user_data["user_id"],
             "role": user_data["role"],
             "user_name": user_data["user_name"],

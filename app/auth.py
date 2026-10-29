@@ -30,10 +30,10 @@ if not configuration["JWT_SECRET_KEY"]:
     raise RuntimeError("JWT_SECRET_KEY is missing from .env")
 
 def get_current_user(credentials : HTTPAuthorizationCredentials = Depends(security)):
-
     # Get the access token from HTTP header (Authorization : bearer < access_token >)
     token = credentials.credentials
 
+    print("token :" , token)
     # Validate Token and get the payload
     payload = validate_token(token = token , tokentype = "access")
 
