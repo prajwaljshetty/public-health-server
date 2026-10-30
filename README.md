@@ -1,12 +1,12 @@
 # public_health
 
-`/ SERVER` &nbsp;·&nbsp; Backend systems
+`/ SERVER` · Backend Systems
 
 ## Behind every request, a system in motion.
 
-The backend powering `public_health` — connecting household identity, pickup operations, persistent state, and real-time communication.
+The backend powering `public_health` — connecting household identity, pickup workflows, persistent state, and real-time communication.
 
-Built around the mechanics that make a connected application work: defined interfaces, controlled access, and state that moves between clients.
+Built around the mechanics of a connected application: well-defined interfaces, authenticated access, and state that flows between services and clients.
 
 ---
 
@@ -14,39 +14,38 @@ Built around the mechanics that make a connected application work: defined inter
 
 **01 / Interface**
 
-FastAPI exposes the REST endpoints through which the mobile application interacts with backend services.
+FastAPI exposes REST endpoints for communication between the mobile application and backend services.
 
 **02 / Identity**
 
-Access and refresh tokens support authenticated sessions and access to protected operations.
+JWT-based authentication manages access to protected operations and authenticated sessions.
 
-**03 / State**
+**03 / Persistence**
 
-Firebase provides persistence for application data and pickup-related state.
+Firebase stores application data and pickup-related state, providing continuity across operations.
 
-**04 / Events**
+**04 / Real-time events**
 
-WebSocket connections carry pickup status updates to connected clients.
+WebSocket connections deliver pickup status updates to connected clients as the system evolves.
 
 ---
 
-### Technology
+### The stack
 
-`Python` / `FastAPI` / `Firebase` / `JWT` / `WebSockets`
+`Python` · `FastAPI` · `Firebase` · `JWT` · `WebSockets`
 
 ---
 
 ### Beyond the endpoints
 
-An API is only one part of the system.
+An API is only the entry point.
 
-The engineering challenge lies in how authentication, persistence, and asynchronous communication interact — especially when multiple clients depend on the same evolving state.
+The real engineering lies in how authentication, persistence, and asynchronous communication work together — especially when multiple clients depend on the same evolving state.
 
-This project explores those boundaries through implementation, debugging, and iteration.
+This project is where I explore those boundaries through implementation, debugging, and iteration.
 
 ---
 
-<text color="secondary" size="sm">SYSTEMS ENGINEERING / BACKEND DEVELOPMENT</text>
+`BACKEND ENGINEERING` / `SYSTEM DESIGN` / `REAL-TIME COMMUNICATION`
 
 *Every moving part has a place.*
-
