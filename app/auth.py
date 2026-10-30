@@ -22,7 +22,7 @@ configuration = {
     "JWT_SECRET_KEY": os.getenv("JWT_SECRET_KEY"),
     "ALGORITHM": "HS256",
     "ACCESS_TOKEN_EXPIRE_MINUTES": 15,
-    "REFRESH_TOKEN_EXPIRE_DAYS" : 30
+    "REFRESH_TOKEN_EXPIRE_DAYS" : 30 * 24
 }
 
 # Secret key ( .env de store maldhe )
@@ -33,7 +33,6 @@ def get_current_user(credentials : HTTPAuthorizationCredentials = Depends(securi
     # Get the access token from HTTP header (Authorization : bearer < access_token >)
     token = credentials.credentials
 
-    print("token :" , token)
     # Validate Token and get the payload
     payload = validate_token(token = token , tokentype = "access")
 

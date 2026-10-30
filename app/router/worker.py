@@ -1,7 +1,7 @@
 from fastapi import APIRouter , WebSocket, WebSocketDisconnect
 
 # Model :
-from app.models.worker import WorkerRegister , WorkerLogin
+from app.models.worker import WorkerRegister , WorkerLogin , PickupAcceptanceRequest
 
 # Firebase :
 from firebase_admin import db
@@ -107,8 +107,6 @@ def login(user: WorkerLogin):
 
     user_data = existing_user.to_dict()
 
-    print(user.password)
-
     # Check password with Hashed Password
     if not verify_password(hashed_password = user_data["password"] , password = user.password):
         return {
@@ -123,8 +121,6 @@ def login(user: WorkerLogin):
     access_token = create_access_token(user_id=user_id)
     refresh_token = create_refresh_token(user_id=user_id)
 
-    print(access_token,refresh_token)
-
     return {
         "status": True,
         "message": "Login successful",
@@ -137,8 +133,6 @@ def login(user: WorkerLogin):
 def get_data(payload: dict = Depends(get_current_user)):
     # Get user ID from JWT payload
     user_id = payload["sub"]
-
-    print(user_id)
 
     # Fetch worker document
     user = firestore_db.collection("workers").document(user_id).get()
@@ -165,6 +159,28 @@ def get_data(payload: dict = Depends(get_current_user)):
         }
     }
 
+@router.get("/accept")
+async def accept_pickup(payload: dict = Depends(get_current_user) , pickup_data = PickupAcceptanceRequest):
+
+    # Get user ID from JWT payload
+    user_id = payload["sub"]
+
+    # Find worker by worker ID
+    user = firestore_db.collection("workers").document(user_id).get()
+
+    if not user.exists:
+        return {
+            "status": False,
+            "message": "User does not exist",
+        }
+
+
+    return {
+        "status": True,
+        "message": "No pickup request found",
+        "pickup_data": None
+    }
+    
 @router.post("/refresh")
 def get_access_token(
     request_data: dict = Depends(get_refresh_token)
@@ -173,7 +189,7 @@ def get_access_token(
     user_id = request_data["sub"]
 
     # Check whether the household exists
-    user = firestore_db.collection("households").document(user_id).get()
+    user = firestore_db.collection("workers").document(user_id).get()
 
     if not user.exists:
         raise HTTPException(
@@ -314,3 +330,4 @@ async def pickup_stream(websocket: WebSocket ):
                 code=1008,
                 reason="Authentication timeout",
             )
+

@@ -302,7 +302,7 @@ def get_access_token(
         )
 
     # Generate a new access token
-    access_token = create_access_token(user_id=user_id)
+    access_token = create_access_token(user_id = user_id)
 
     return {
         "status": True,
@@ -311,6 +311,7 @@ def get_access_token(
         "token_type": "bearer",
         "expires_in": 900
     }
+
 
 @router.websocket("/pickup/status/{pickup_id}")
 async def pickup_status_stream(
@@ -321,6 +322,8 @@ async def pickup_status_stream(
 
     user_id = None
     listener = None
+    message_task = None
+    pickup_task = None
 
     try:
         token = await asyncio.wait_for(
@@ -339,6 +342,8 @@ async def pickup_status_stream(
 
         user_id = payload["sub"]
 
+        print("Connected user:", user_id)
+
         pickup_status_db = db.reference(
             f"pickups/status/{pickup_id}"
         )
@@ -347,7 +352,6 @@ async def pickup_status_stream(
             f"pickups/requests/{pickup_id}/user_id"
         )
 
-        initial_data = pickup_status_db.get()
         owner_id = pickup_owner_db.get()
 
         if owner_id != user_id:
@@ -356,42 +360,12 @@ async def pickup_status_stream(
                 "message": "Unauthorized",
                 "pickup_data": {},
             })
+
             await websocket.close(
                 code=1008,
                 reason="Unauthorized",
             )
             return
-
-        if isinstance(initial_data, dict):
-            initial_status = initial_data.get("status")
-        elif isinstance(initial_data, str):
-            initial_status = initial_data
-        else:
-            await websocket.send_json({
-                "status": False,
-                "message": "Pickup not found",
-                "pickup_data": {},
-            })
-            await websocket.close(
-                code=1008,
-                reason="Pickup not found",
-            )
-            return
-
-        if not isinstance(initial_status, str):
-            await websocket.close(
-                code=1008,
-                reason="Invalid pickup status",
-            )
-            return
-
-        await websocket.send_json({
-            "status": True,
-            "pickup_data": {
-                "pickup_id": pickup_id,
-                "status": initial_status,
-            },
-        })
 
         queue = asyncio.Queue()
         loop = asyncio.get_running_loop()
@@ -418,16 +392,79 @@ async def pickup_status_stream(
             pickup_status_listener
         )
 
-        while True:
-            pickup_status = await queue.get()
+        initial_data = pickup_status_db.get()
 
+        if isinstance(initial_data, dict):
+            initial_status = initial_data.get("status")
+        elif isinstance(initial_data, str):
+            initial_status = initial_data
+        else:
             await websocket.send_json({
-                "status": True,
-                "pickup_data": {
-                    "pickup_id": pickup_id,
-                    "status": pickup_status,
-                },
+                "status": False,
+                "message": "Pickup not found",
+                "pickup_data": {},
             })
+
+            await websocket.close(
+                code=1008,
+                reason="Pickup not found",
+            )
+            return
+
+        if not isinstance(initial_status, str):
+            await websocket.close(
+                code=1008,
+                reason="Invalid pickup status",
+            )
+            return
+
+        await websocket.send_json({
+            "status": True,
+            "pickup_data": {
+                "pickup_id": pickup_id,
+                "status": initial_status,
+            },
+        })
+
+        async def receive():
+            while True:
+                message = await websocket.receive_text()
+
+                if message == "logout":
+                    return
+
+        async def pickup():
+            while True:
+                pickup_status = await queue.get()
+
+                await websocket.send_json({
+                    "status": True,
+                    "pickup_data": {
+                        "pickup_id": pickup_id,
+                        "status": pickup_status,
+                    },
+                })
+
+        message_task = asyncio.create_task(receive())
+        pickup_task = asyncio.create_task(pickup())
+
+        done, pending = await asyncio.wait(
+            [message_task, pickup_task],
+            return_when=asyncio.FIRST_COMPLETED
+        )
+
+        for task in pending:
+            task.cancel()
+
+        await asyncio.gather(
+            *pending,
+            return_exceptions=True
+        )
+
+        for task in done:
+            task.result()
+
+        print("User logged out:", user_id)
 
     except asyncio.TimeoutError:
         await websocket.close(
@@ -439,5 +476,13 @@ async def pickup_status_stream(
         print("Disconnected user:", user_id)
 
     finally:
+        print("Disconnected user:", user_id)
+
+        if message_task is not None and not message_task.done():
+            message_task.cancel()
+
+        if pickup_task is not None and not pickup_task.done():
+            pickup_task.cancel()
+
         if listener is not None:
             listener.close()
