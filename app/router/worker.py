@@ -174,6 +174,8 @@ async def accept_pickup(payload: dict = Depends(get_current_user) , pickup_data 
             "message": "User does not exist",
         }
 
+    
+
 
     return {
         "status": True,
