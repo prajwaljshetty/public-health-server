@@ -190,7 +190,7 @@ def get_access_token(
     # Get user ID
     user_id = request_data["sub"]
 
-    # Check whether the household exists
+    # Check whether the user exists
     user = firestore_db.collection("workers").document(user_id).get()
 
     if not user.exists:

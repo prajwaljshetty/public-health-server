@@ -22,7 +22,7 @@ configuration = {
     "JWT_SECRET_KEY": os.getenv("JWT_SECRET_KEY"),
     "ALGORITHM": "HS256",
     "ACCESS_TOKEN_EXPIRE_MINUTES": 15,
-    "REFRESH_TOKEN_EXPIRE_DAYS" : 30 * 24
+    "REFRESH_TOKEN_EXPIRE_DAYS" : 30
 }
 
 # Secret key ( .env de store maldhe )
@@ -70,7 +70,7 @@ def create_access_token(user_id: str) -> str:
     # Token expiration: 15 minutes
     now = datetime.now(timezone.utc)
     expire = now + timedelta(
-        minutes=configuration["ACCESS_TOKEN_EXPIRE_MINUTES"]
+        days=configuration["ACCESS_TOKEN_EXPIRE_MINUTES"]
     )
 
     # JWT payload
