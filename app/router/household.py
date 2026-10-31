@@ -155,25 +155,17 @@ def get_data(payload: dict = Depends(get_current_user)):
     # Get user data from Firestore
     user_data = user.to_dict()
 
-    # Check whether the user already has an active pickup request
-    pickups = realtime_db.reference("pickups/requests").get()
+    # Get pickup statuses
+    pickups_status = realtime_db.reference("pickups/status").get()
 
-    pickup_id = None
     current_status = "idle"
 
-    if pickups:
-        for key, pickup in pickups.items():
+    if pickups_status:
+        for pickup in pickups_status.values():
+
             if pickup.get("user_id") == user_id:
-                pickup_id = key
+                current_status = pickup.get("status", "idle")
                 break
-
-    if pickup_id:
-        pickup_status = realtime_db.reference(
-            f"pickups/status/{pickup_id}"
-        ).get()
-
-        if pickup_status:
-            current_status = pickup_status.get("status", "idle")
 
     # Return household data
     return {
@@ -184,7 +176,7 @@ def get_data(payload: dict = Depends(get_current_user)):
             "role": "household",
             "user_name": user_data["user_name"],
             "phoneno": user_data["phoneno"],
-            "pickup_status" : current_status
+            "pickup_status": current_status
         }
     }
 
@@ -246,42 +238,60 @@ async def request_pickup(
 
 @router.get("/pickup/data")
 def get_pickup_data(payload: dict = Depends(get_current_user)):
+
     # Get user ID
     user_id = payload["sub"]
 
-    # Check whether user exists
+    # Check household exists
     user = firestore_db.collection("households").document(user_id).get()
 
     if not user.exists:
         return {
             "status": False,
             "message": "User does not exist",
-            "pickupdata": None
-        }
-
-    # Fetch pickup data
-    pickups = (
-        realtime_db.reference("pickups/requests")
-        .order_by_child("user_id")
-        .equal_to(user_id)
-        .get()
-    )
-
-    # Pickup data does not exist
-    if not pickups:
-        return {
-            "status": True,
-            "message": "No pickup request found",
             "pickup_data": None
         }
 
-    pickupdata = next(iter(pickups.values()))
+    # Real-time database references
+    pickups_status_reference = realtime_db.reference("pickups/status")
+    pickup_requests_reference = realtime_db.reference("pickups/requests")
+    pickup_accepted_reference = realtime_db.reference("pickups/accepted")
 
-    # Return pickup details
+    # Find household's active pickup
+    pickups_status = pickups_status_reference.get()
+
+    pickup_id = None
+    current_status = "idle"
+    pickup_data = None
+
+    if pickups_status:
+        for key, pickup in pickups_status.items():
+
+            if pickup.get("user_id") == user_id:
+                pickup_id = key
+                current_status = pickup.get("status", "idle")
+                break
+
+    # Fetch pickup data based on status
+    if pickup_id:
+
+        if current_status == "requested":
+            pickup_data = pickup_requests_reference.child(
+                pickup_id
+            ).get()
+
+        elif current_status == "assigned":
+            pickup_data = pickup_accepted_reference.child(
+                pickup_id
+            ).get()
+
+    # Return pickup data
     return {
         "status": True,
         "message": "Pickup data fetched successfully",
-        "pickup_data": pickupdata
+        "pickup_status": current_status,
+        "pickup_id": pickup_id,
+        "pickup_data": pickup_data
     }
 
 @router.post("/refresh")
@@ -311,7 +321,6 @@ def get_access_token(
         "token_type": "bearer",
         "expires_in": 900
     }
-
 
 @router.websocket("/pickup/status/{pickup_id}")
 async def pickup_status_stream(

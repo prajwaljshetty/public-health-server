@@ -13,4 +13,3 @@ class WorkerLogin(BaseModel):
 
 class PickupAcceptanceRequest(BaseModel):
     pickup_id : str
-    time : str

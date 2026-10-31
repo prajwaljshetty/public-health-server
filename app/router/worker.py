@@ -10,6 +10,9 @@ from app.firebase import firestore_db , realtime_db
 # Asychronus :
 import asyncio
 
+# Date Time :
+from datetime import datetime, timezone
+
 # Filter :
 from google.cloud.firestore_v1.base_query import FieldFilter
 
@@ -159,30 +162,119 @@ def get_data(payload: dict = Depends(get_current_user)):
         }
     }
 
-@router.get("/accept")
-async def accept_pickup(payload: dict = Depends(get_current_user) , pickup_data = PickupAcceptanceRequest):
+@router.post("/pickup/accept")
+async def accept_pickup(
+    pickup_acceptance_request_data: PickupAcceptanceRequest,
+    payload: dict = Depends(get_current_user)
+):
 
     # Get user ID from JWT payload
     user_id = payload["sub"]
 
     # Find worker by worker ID
-    user = firestore_db.collection("workers").document(user_id).get()
+    worker_document = firestore_db.collection("workers").document(user_id).get()
 
-    if not user.exists:
+    if not worker_document.exists:
         return {
             "status": False,
-            "message": "User does not exist",
+            "message": "Worker does not exist",
         }
 
-    
+    # Extract pickup acceptance data
+    pickup_id = pickup_acceptance_request_data.pickup_id
 
+    # Generate server-side acceptance timestamp
+    pickup_accepted_time = datetime.now(timezone.utc).isoformat()
+
+    # Real-time pickup status reference
+    pickups_status_reference = realtime_db.reference("pickups/status")
+
+    pickup_status_reference = pickups_status_reference.child(pickup_id)
+
+    # Atomic claim
+    def claim_pickup(current_data):
+
+        if not current_data:
+            return current_data
+
+        if current_data.get("status") != "requested":
+            return current_data
+
+        current_data["status"] = "assigned"
+        current_data["worker_id"] = user_id
+        current_data["accepted_at"] = pickup_accepted_time
+
+        return current_data
+
+    claimed_data = pickup_status_reference.transaction(claim_pickup)
+
+    # Check whether pickup was successfully claimed
+    if (
+        not claimed_data
+        or claimed_data.get("status") != "assigned"
+        or claimed_data.get("worker_id") != user_id
+    ):
+        return {
+            "status": False,
+            "message": "Pickup already accepted or does not exist",
+        }
+
+    # Real-time pickup request reference
+    pickup_request_reference = realtime_db.reference("pickups/requests")
+
+    # Fetch pickup request data
+    pickup_request_data = pickup_request_reference.child(pickup_id).get()
+
+    if not pickup_request_data:
+        # Roll back the claim if request data is missing
+        def rollback_claim(current_data):
+
+            if (
+                current_data
+                and current_data.get("worker_id") == user_id
+                and current_data.get("status") == "assigned"
+            ):
+                current_data["status"] = "requested"
+                current_data.pop("worker_id", None)
+                current_data.pop("accepted_at", None)
+
+            return current_data
+
+        pickup_status_reference.transaction(rollback_claim)
+
+        return {
+            "status": False,
+            "message": "Pickup data does not exist",
+        }
+
+    # Save accepted pickup data
+    realtime_db.reference(
+        "pickups/accepted"
+    ).child(pickup_id).set({
+        "pickup_id": pickup_id,
+        "household_id": pickup_request_data["user_id"],
+        "worker_id": user_id,
+        "accepted_at": pickup_accepted_time,
+        "pickup_data": {
+            "time": pickup_request_data["time"],
+            "coordinate": {
+                "latitude": pickup_request_data["coordinate"]["latitude"],
+                "longitude": pickup_request_data["coordinate"]["longitude"],
+            },
+            "qna": pickup_request_data["qna"],
+        }
+    })
+
+    # Delete pickup from pending requests
+    pickup_request_reference.child(pickup_id).delete()
 
     return {
         "status": True,
-        "message": "No pickup request found",
-        "pickup_data": None
+        "message": "Pickup has been accepted successfully",
+        "pickup_id": pickup_id,
+        "accepted_at": pickup_accepted_time,
     }
-    
+
 @router.post("/refresh")
 def get_access_token(
     request_data: dict = Depends(get_refresh_token)
