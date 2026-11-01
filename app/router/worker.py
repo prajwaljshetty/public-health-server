@@ -188,10 +188,9 @@ async def accept_pickup(
 
     # Real-time pickup status reference
     pickups_status_reference = realtime_db.reference("pickups/status")
-
     pickup_status_reference = pickups_status_reference.child(pickup_id)
 
-    # Atomic claim
+    # Atomic pickup data claim
     def claim_pickup(current_data):
 
         if not current_data:
@@ -225,7 +224,10 @@ async def accept_pickup(
     # Fetch pickup request data
     pickup_request_data = pickup_request_reference.child(pickup_id).get()
 
-    if not pickup_request_data:
+    print(pickup_request_data)
+
+    if pickup_request_data is None:
+
         # Roll back the claim if request data is missing
         def rollback_claim(current_data):
 
@@ -234,7 +236,6 @@ async def accept_pickup(
                 and current_data.get("worker_id") == user_id
                 and current_data.get("status") == "assigned"
             ):
-                current_data["status"] = "requested"
                 current_data.pop("worker_id", None)
                 current_data.pop("accepted_at", None)
 
@@ -253,6 +254,7 @@ async def accept_pickup(
     ).child(pickup_id).set({
         "pickup_id": pickup_id,
         "household_id": pickup_request_data["user_id"],
+        "household_name": pickup_request_data["user_name"],
         "worker_id": user_id,
         "accepted_at": pickup_accepted_time,
         "pickup_data": {
@@ -264,6 +266,13 @@ async def accept_pickup(
             "qna": pickup_request_data["qna"],
         }
     })
+
+    # Add pickup ID to worker's accepted pickups
+    worker_pickups_reference = realtime_db.reference(
+        f"workers/accepted/{user_id}"
+    )
+
+    worker_pickups_reference.child(pickup_id).set(True)
 
     # Delete pickup from pending requests
     pickup_request_reference.child(pickup_id).delete()
@@ -301,6 +310,64 @@ def get_access_token(
         "access_token": access_token,
         "token_type": "bearer",
         "expires_in": 900
+    }
+
+@router.get("/pickup/accepted/data")
+async def get_accepted_pickups(
+    payload: dict = Depends(get_current_user)
+):
+    # Get worker ID from JWT payload
+    user_id = payload["sub"]
+
+    # Verify worker exists
+    worker_document = firestore_db.collection("workers").document(user_id).get()
+
+    if not worker_document.exists:
+        return {
+            "status": False,
+            "message": "Worker does not exist",
+        }
+
+    # Get worker's accepted pickup IDs
+    worker_pickups_reference = realtime_db.reference(
+        f"workers/accepted/{user_id}"
+    )
+
+    worker_pickups_data = worker_pickups_reference.get()
+
+    if not worker_pickups_data:
+        return {
+            "status": True,
+            "message": "No accepted pickups found",
+            "pickup_count": 0,
+            "pickups": [],
+        }
+
+    # Get all accepted pickup records
+    accepted_pickups_reference = realtime_db.reference("pickups/accepted")
+    accepted_pickups_data = accepted_pickups_reference.get() or {}
+
+    accepted_pickups = []
+
+    for pickup_id in worker_pickups_data.keys():
+
+        pickup_data = accepted_pickups_data.get(pickup_id)
+
+        if not pickup_data:
+            continue
+
+        # Verify pickup belongs to this worker
+        if pickup_data.get("worker_id") == user_id:
+            accepted_pickups.append({
+                **pickup_data,
+                "pickup_id": pickup_id,
+            })
+
+    return {
+        "status": True,
+        "message": "Accepted pickups retrieved successfully",
+        "pickup_count": len(accepted_pickups),
+        "pickups": accepted_pickups,
     }
 
 @router.websocket("/pickups")

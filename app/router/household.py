@@ -207,12 +207,15 @@ async def request_pickup(
     # Normalize timestamp
     pickup_time = household_request_data.time.isoformat()
 
+    user_data = user.to_dict()
+
     # Save pickup request
     realtime_db.reference(
         "pickups/requests"
     ).child(pickup_id).set({
         "pickupid": pickup_id,
         "user_id": user_id,
+        "user_name": user_data["user_name"],
         "time": pickup_time,
         "coordinate": {
             "latitude": household_request_data.coordinate.latitude,
@@ -482,7 +485,7 @@ async def pickup_status_stream(
         )
 
     except WebSocketDisconnect:
-        print("Disconnected user:", user_id)
+        pass
 
     finally:
         print("Disconnected user:", user_id)
