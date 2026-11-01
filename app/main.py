@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 
 # Routers :
-from app.router import household , worker
+from app.router import admin, household, worker
 
 # Firebase
 from app.firebase import firestore_db , realtime_db
@@ -16,6 +16,7 @@ app.add_middleware(
     allow_origins=[
         "http://localhost:3000",
         "http://localhost:5173",
+        "http://10.239.245.28:5173",
         "http://10.239.245.28:8000",
     ],
     allow_credentials=True,
@@ -34,4 +35,9 @@ app.include_router(
 app.include_router(
     worker.router,
     prefix='/worker'
+)
+
+app.include_router(
+    admin.router,
+    prefix="/admin"
 )

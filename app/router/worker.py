@@ -1,16 +1,13 @@
-from fastapi import APIRouter , WebSocket, WebSocketDisconnect
+from fastapi import APIRouter
 
 # Model :
-from app.models.worker import WorkerRegister , WorkerLogin
+from app.models.worker import WorkerCreate, WorkerRegister , WorkerLogin
 
 # Firebase :
-from firebase_admin import db
-from app.firebase import firestore_db , realtime_db
-
-# Asychronus :
-import asyncio
+from app.firebase import firestore_db
 
 # Filter :
+from google.cloud.firestore_v1 import transactional
 from google.cloud.firestore_v1.base_query import FieldFilter
 
 # HTTP :
@@ -24,8 +21,7 @@ from app.auth import (
     create_access_token ,
     create_refresh_token ,
     get_current_user , 
-    get_refresh_token ,
-    validate_token
+    get_refresh_token
 )
 
 # Password Hasher :
@@ -35,6 +31,80 @@ from app.hasher import (
 )
 
 router = APIRouter()
+
+
+def _highest_existing_worker_number() -> int:
+    """Return the highest numeric PW worker ID already stored in Firestore."""
+    highest = 100
+
+    for document in firestore_db.collection("workers").stream():
+        worker_id = (document.to_dict() or {}).get("worker_id", "")
+        if not isinstance(worker_id, str) or not worker_id.startswith("PW-"):
+            continue
+
+        try:
+            highest = max(highest, int(worker_id.removeprefix("PW-")))
+        except ValueError:
+            continue
+
+    return highest
+
+
+def _generate_worker_id() -> str:
+    """Allocate a unique sequential worker ID starting at PW-101."""
+    counter_ref = firestore_db.collection("metadata").document("worker_counter")
+    first_available = _highest_existing_worker_number() + 1
+    transaction = firestore_db.transaction()
+
+    @transactional
+    def allocate(transaction):
+        counter = transaction.get(counter_ref)
+        counter_data = counter.to_dict() if counter.exists else {}
+        next_number = max(
+            first_available,
+            int(counter_data.get("next_number", 101)),
+        )
+
+        transaction.set(
+            counter_ref,
+            {"next_number": next_number + 1},
+            merge=True,
+        )
+        return f"PW-{next_number}"
+
+    return allocate(transaction)
+
+
+@router.post("/add", status_code=status.HTTP_201_CREATED)
+def add_worker(worker: WorkerCreate):
+    """Create an administrator-provisioned worker with an automatic PW ID."""
+    name = worker.name.strip()
+    if not name:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Worker name cannot be empty",
+        )
+
+    worker_id = _generate_worker_id()
+    user_id = str(uuid.uuid4())
+
+    firestore_db.collection("workers").document(user_id).set({
+        "user_id": user_id,
+        "worker_id": worker_id,
+        "user_name": name,
+        "password": hash_password(worker.password),
+        "role": "worker",
+    })
+
+    return {
+        "status": True,
+        "message": "Worker added successfully",
+        "worker": {
+            "user_id": user_id,
+            "worker_id": worker_id,
+            "name": name,
+        },
+    }
 
 @router.post("/createaccount")
 def create_account(worker: WorkerRegister):
@@ -161,7 +231,7 @@ def get_data(payload: dict = Depends(get_current_user)):
             "user_id": user_data["user_id"],
             "role": user_data["role"],
             "user_name": user_data["user_name"],
-            "phoneno": user_data["phoneno"]
+            "phoneno": user_data.get("phoneno", "")
         }
     }
 
@@ -192,125 +262,3 @@ def get_access_token(
         "token_type": "bearer",
         "expires_in": 900
     }
-
-@router.websocket("/pickups")
-async def pickup_stream(websocket: WebSocket ):
-
-    await websocket.accept()
-
-    user_id = None
-
-    try :
-        token = await asyncio.wait_for(
-            websocket.receive_text() ,
-            timeout = 10
-        )
-
-        payload = validate_token(token = token , tokentype = "access")
-
-        if not payload :
-            await websocket.close(
-                code=1008,
-                reason="Invalid access token",
-            )
-            return
-
-        user_id = payload["sub"]
-
-        print("Connected user:", user_id)
-
-        pickup_DB = db.reference("pickups/requests")
-
-        queue = asyncio.Queue()
-
-        loop = asyncio.get_running_loop()
-
-        def pickup_listener(event):
-            pickup_data = pickup_DB.get()
-
-            if pickup_data is None:
-                pickup_data = {}
-
-            asyncio.run_coroutine_threadsafe(
-                queue.put(pickup_data),
-                loop
-            )
-
-        async def receive():
-            while True :
-                message = await websocket.receive_text()
-                if message == "logout" : 
-                    return
-
-        async def pickup():
-            while True:
-                pickup_data = await queue.get()
-
-                pickup_list = []
-            
-                for pickupid, pickup in pickup_data.items():
-
-                    pickup_userid = pickup["user_id"]
-
-                    user =  await asyncio.to_thread(
-                        firestore_db.collection("households").document(
-                        pickup_userid).get
-                    )
-                    
-                    if user.exists:
-
-                        userdata = user.to_dict()
-
-                        pickup_item = {
-                            "pickupid": pickupid,
-                            "user_id": pickup_userid,
-                            "user_name": userdata["user_name"],
-                            "time": pickup["time"],
-                            "coordinates": pickup["coordinate"],
-                            "qna": pickup["qna"],
-                        }
-
-                        pickup_list.append(pickup_item)
-
-                await websocket.send_json(pickup_list)
-
-        listener = pickup_DB.listen(pickup_listener)
-
-        message_task = asyncio.create_task(receive())
-        pickup_task = asyncio.create_task(pickup())
-
-        try :
-            done, pending = await asyncio.wait(
-                [message_task, pickup_task],
-                return_when=asyncio.FIRST_COMPLETED
-            )
-
-            for task in pending:
-                task.cancel()
-
-            await asyncio.gather(*pending, return_exceptions=True)
-
-            for task in done:
-                task.result()
-
-            if message_task in done:
-                print("Worker logged out:", user_id)
-
-        except WebSocketDisconnect:
-            print("Disconnected user:", user_id)
-            
-        finally:
-            message_task.cancel()
-            pickup_task.cancel()
-            
-            await asyncio.gather(
-                message_task, pickup_task,
-                return_exceptions=True
-            )
-            await asyncio.to_thread(listener.close)
-
-    except asyncio.TimeoutError:
-            await websocket.close(
-                code=1008,
-                reason="Authentication timeout",
-            )
