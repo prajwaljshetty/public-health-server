@@ -2,6 +2,29 @@
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from fastapi import Depends, HTTPException, status
+import asyncio
+import uuid
+
+from fastapi import (
+    APIRouter,
+    Depends,
+    HTTPException,
+    WebSocket,
+    WebSocketDisconnect,
+    status,
+)
+
+# Model :
+from app.models.worker import (
+    PickupAcceptanceRequest,
+    WorkerCreate,
+    WorkerLogin,
+    WorkerRegister,
+    WorkerUpdate,
+)
+
+# Firebase :
+from app.firebase import db, firestore_db, realtime_db
 
 from firebase_admin import db
 from app.firebase import firestore_db, realtime_db
@@ -14,12 +37,14 @@ from datetime import datetime, timezone
 
 import uuid
 
+# HTTP :
+# Token Creation and Validations :
 from app.auth import (
-    create_access_token,
-    create_refresh_token,
-    get_current_user,
+    create_access_token ,
+    create_refresh_token ,
+    get_current_user , 
     get_refresh_token,
-    validate_token
+    validate_token,
 )
 
 from app.hasher import (
@@ -29,6 +54,145 @@ from app.hasher import (
 
 router = APIRouter()
 
+
+def _highest_existing_worker_number() -> int:
+    """Return the highest numeric PW worker ID already stored in Firestore."""
+    highest = 100
+
+    for document in firestore_db.collection("workers").stream():
+        worker_id = (document.to_dict() or {}).get("worker_id", "")
+        if not isinstance(worker_id, str) or not worker_id.startswith("PW-"):
+            continue
+
+        try:
+            highest = max(highest, int(worker_id.removeprefix("PW-")))
+        except ValueError:
+            continue
+
+    return highest
+
+
+def _generate_worker_id() -> str:
+    """Allocate a unique sequential worker ID starting at PW-101."""
+    counter_ref = firestore_db.collection("metadata").document("worker_counter")
+    first_available = _highest_existing_worker_number() + 1
+    transaction = firestore_db.transaction()
+
+    @transactional
+    def allocate(transaction):
+        counter = transaction.get(counter_ref)
+        counter_data = counter.to_dict() if counter.exists else {}
+        next_number = max(
+            first_available,
+            int(counter_data.get("next_number", 101)),
+        )
+
+        transaction.set(
+            counter_ref,
+            {"next_number": next_number + 1},
+            merge=True,
+        )
+        return f"PW-{next_number}"
+
+    return allocate(transaction)
+
+
+@router.post("/add", status_code=status.HTTP_201_CREATED)
+def add_worker(worker: WorkerCreate):
+    """Create an administrator-provisioned worker with an automatic PW ID."""
+    name = worker.name.strip()
+    if not name:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Worker name cannot be empty",
+        )
+
+    worker_id = _generate_worker_id()
+    user_id = str(uuid.uuid4())
+
+    firestore_db.collection("workers").document(user_id).set({
+        "user_id": user_id,
+        "worker_id": worker_id,
+        "user_name": name,
+        "phoneno": "",
+        "password": hash_password(worker.password),
+        "role": "worker",
+    })
+
+    return {
+        "status": True,
+        "message": "Worker added successfully",
+        "worker": {
+            "user_id": user_id,
+            "worker_id": worker_id,
+            "name": name,
+        },
+    }
+
+
+@router.get("/all")
+def get_all_workers():
+    """Return workers created by the administrator without password hashes."""
+    workers = []
+
+    for document in firestore_db.collection("workers").stream():
+        data = document.to_dict() or {}
+        workers.append({
+            "user_id": data.get("user_id", document.id),
+            "worker_id": data.get("worker_id", ""),
+            "name": data.get("user_name", ""),
+        })
+
+    workers.sort(key=lambda item: item["worker_id"])
+    return {
+        "status": True,
+        "message": "Workers fetched successfully",
+        "workers": workers,
+    }
+
+
+@router.patch("/{user_id}")
+def update_worker(user_id: str, worker: WorkerUpdate):
+    """Update a worker's name and optionally replace their login password."""
+    worker_reference = firestore_db.collection("workers").document(user_id)
+    worker_document = worker_reference.get()
+
+    if not worker_document.exists:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="WORKER_NOT_FOUND")
+
+    name = worker.name.strip()
+    if not name:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Worker name cannot be empty",
+        )
+
+    updates = {"user_name": name}
+    if worker.password:
+        updates["password"] = hash_password(worker.password)
+
+    worker_reference.update(updates)
+    data = worker_document.to_dict() or {}
+    return {
+        "status": True,
+        "message": "Worker updated successfully",
+        "worker": {
+            "user_id": user_id,
+            "worker_id": data.get("worker_id", ""),
+            "name": name,
+        },
+    }
+
+
+@router.delete("/{user_id}")
+def delete_worker(user_id: str):
+    """Delete a worker account so its credentials can no longer be used."""
+    worker_reference = firestore_db.collection("workers").document(user_id)
+    if not worker_reference.get().exists:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="WORKER_NOT_FOUND")
+
+    worker_reference.delete()
+    return {"status": True, "message": "Worker deleted successfully"}
 
 @router.post("/createaccount")
 def create_account(worker: WorkerRegister):
@@ -74,6 +238,11 @@ def create_account(worker: WorkerRegister):
 
 @router.post("/login")
 def login(user: WorkerLogin):
+    
+    # Find worker by worker ID
+    users = firestore_db.collection("workers").where(
+        filter=FieldFilter("worker_id", "==", user.worker_id.strip().upper())
+    ).limit(1).stream()
 
     users = firestore_db.collection("workers").where(
         filter=FieldFilter(
