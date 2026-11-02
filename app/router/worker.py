@@ -381,8 +381,6 @@ def get_access_token(
         "token_type": "bearer",
         "expires_in": 900
     }
-<<<<<<< HEAD
-=======
 
 @router.get("/pickup/accepted/data")
 async def get_accepted_pickups(
@@ -564,4 +562,3 @@ async def pickup_stream(websocket: WebSocket ):
                 reason="Authentication timeout",
             )
 
->>>>>>> 30bb647aa8bb42b6235dbda5695a9dc2d22de667
