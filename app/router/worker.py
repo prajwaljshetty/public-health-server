@@ -1,8 +1,6 @@
 
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect
-
-from fastapi import Depends, HTTPException, status
 import asyncio
+import re
 import uuid
 
 from fastapi import (
@@ -25,43 +23,6 @@ from app.models.worker import (
 
 # Firebase :
 from app.firebase import db, firestore_db, realtime_db
-<<<<<<< HEAD
-
-from firebase_admin import db
-from app.firebase import firestore_db, realtime_db
-from google.cloud.firestore_v1.base_query import FieldFilter
-
-from app.models.worker import WorkerRegister, WorkerLogin, PickupAcceptanceRequest
-
-import asyncio
-from datetime import datetime, timezone
-
-import uuid
-import asyncio
-import uuid
-
-from fastapi import (
-    APIRouter,
-    Depends,
-    HTTPException,
-    WebSocket,
-    WebSocketDisconnect,
-    status,
-)
-
-# Model :
-from app.models.worker import (
-    PickupAcceptanceRequest,
-    WorkerCreate,
-    WorkerLogin,
-    WorkerRegister,
-    WorkerUpdate,
-)
-
-# Firebase :
-from app.firebase import db, firestore_db, realtime_db
-=======
->>>>>>> 4de8de2 (Admin-worker backend updated)
 
 # Date Time :
 from datetime import datetime, timezone
@@ -94,13 +55,12 @@ def _highest_existing_worker_number() -> int:
 
     for document in firestore_db.collection("workers").stream():
         worker_id = (document.to_dict() or {}).get("worker_id", "")
-        if not isinstance(worker_id, str) or not worker_id.startswith("PW-"):
+        if not isinstance(worker_id, str):
             continue
 
-        try:
-            highest = max(highest, int(worker_id.removeprefix("PW-")))
-        except ValueError:
-            continue
+        match = re.fullmatch(r"PW-?(\d+)", worker_id.strip(), re.IGNORECASE)
+        if match:
+            highest = max(highest, int(match.group(1)))
 
     return highest
 
@@ -113,8 +73,8 @@ def _generate_worker_id() -> str:
 
     @transactional
     def allocate(transaction):
-        counter = transaction.get(counter_ref)
-        counter_data = counter.to_dict() if counter.exists else {}
+        counter = next(transaction.get(counter_ref), None)
+        counter_data = counter.to_dict() if counter and counter.exists else {}
         next_number = max(
             first_available,
             int(counter_data.get("next_number", 101)),
@@ -274,14 +234,10 @@ def login(user: WorkerLogin):
     
     # Find worker by worker ID
     users = firestore_db.collection("workers").where(
-        filter=FieldFilter("worker_id", "==", user.worker_id.strip().upper())
-    ).limit(1).stream()
-
-    users = firestore_db.collection("workers").where(
         filter=FieldFilter(
             "worker_id",
             "==",
-            user.worker_id
+            user.worker_id.strip().upper()
         )
     ).limit(1).stream()
 
@@ -344,6 +300,29 @@ def get_data(payload: dict = Depends(get_current_user)):
             "user_name": user_data["user_name"],
             "phoneno": user_data["phoneno"]
         }
+    }
+
+
+@router.get("/{user_id}")
+def get_worker(user_id: str):
+    """Return one worker without exposing the password hash."""
+    document = firestore_db.collection("workers").document(user_id).get()
+    if not document.exists:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="WORKER_NOT_FOUND",
+        )
+
+    data = document.to_dict() or {}
+    return {
+        "status": True,
+        "message": "Worker fetched successfully",
+        "worker": {
+            "user_id": data.get("user_id", document.id),
+            "worker_id": data.get("worker_id", ""),
+            "name": data.get("user_name", ""),
+            "phoneno": data.get("phoneno", ""),
+        },
     }
 
 @router.post("/pickup/accept")
