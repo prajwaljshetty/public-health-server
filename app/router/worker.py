@@ -25,6 +25,7 @@ from app.models.worker import (
 
 # Firebase :
 from app.firebase import db, firestore_db, realtime_db
+<<<<<<< HEAD
 
 from firebase_admin import db
 from app.firebase import firestore_db, realtime_db
@@ -59,6 +60,8 @@ from app.models.worker import (
 
 # Firebase :
 from app.firebase import db, firestore_db, realtime_db
+=======
+>>>>>>> 4de8de2 (Admin-worker backend updated)
 
 # Date Time :
 from datetime import datetime, timezone
