@@ -34,7 +34,6 @@ def get_current_user(credentials : HTTPAuthorizationCredentials = Depends(securi
     # Get the access token from HTTP header (Authorization : bearer < access_token >)
     token = credentials.credentials
 
-    print("token :" , token)
     # Validate Token and get the payload
     payload = validate_token(token = token , tokentype = "access")
 
@@ -72,7 +71,7 @@ def create_access_token(user_id: str) -> str:
     # Token expiration: 15 minutes
     now = datetime.now(timezone.utc)
     expire = now + timedelta(
-        minutes=configuration["ACCESS_TOKEN_EXPIRE_MINUTES"]
+        days=configuration["ACCESS_TOKEN_EXPIRE_MINUTES"]
     )
 
     # JWT payload
