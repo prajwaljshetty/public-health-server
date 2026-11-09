@@ -1,48 +1,38 @@
-from fastapi import APIRouter , WebSocket, WebSocketDisconnect
 
-# Model :
-from app.models.worker import WorkerRegister , WorkerLogin , PickupAcceptanceRequest
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
-# Firebase :
+from fastapi import Depends, HTTPException, status
+
 from firebase_admin import db
-from app.firebase import firestore_db , realtime_db
-
-# Asychronus :
-import asyncio
-
-# Date Time :
-from datetime import datetime, timezone
-
-# Filter :
+from app.firebase import firestore_db, realtime_db
 from google.cloud.firestore_v1.base_query import FieldFilter
 
-# HTTP :
-from fastapi import Depends , HTTPException, status
+from app.models.worker import WorkerRegister, WorkerLogin, PickupAcceptanceRequest
 
-# Unique :
+import asyncio
+from datetime import datetime, timezone
+
 import uuid
 
-# Token Creation and Validations :
 from app.auth import (
-    create_access_token ,
-    create_refresh_token ,
-    get_current_user , 
-    get_refresh_token ,
+    create_access_token,
+    create_refresh_token,
+    get_current_user,
+    get_refresh_token,
     validate_token
 )
 
-# Password Hasher :
 from app.hasher import (
-    hash_password ,
-    verify_password ,
+    hash_password,
+    verify_password
 )
 
 router = APIRouter()
 
+
 @router.post("/createaccount")
 def create_account(worker: WorkerRegister):
 
-    # Check whether worker already exists
     users = firestore_db.collection("workers").where(
         filter=FieldFilter(
             "worker_id",
@@ -58,13 +48,9 @@ def create_account(worker: WorkerRegister):
             "user_id": None
         }
 
-    # Generate user ID
     user_id = str(uuid.uuid4())
-
-    # Hash password
     password = hash_password(worker.password)
 
-    # Save worker
     firestore_db.collection("workers").document(user_id).set({
         "user_id": user_id,
         "worker_id": worker.worker_id,
@@ -74,13 +60,9 @@ def create_account(worker: WorkerRegister):
         "role": "worker"
     })
 
-    # Generate Access Token
     access_token = create_access_token(user_id=user_id)
-
-    # Generate Refresh Token
     refresh_token = create_refresh_token(user_id=user_id)
 
-    # Return response
     return {
         "status": True,
         "message": "Account created successfully",
@@ -89,18 +71,20 @@ def create_account(worker: WorkerRegister):
         "refresh_token": refresh_token
     }
 
+
 @router.post("/login")
 def login(user: WorkerLogin):
-    
-    # Find worker by worker ID
-    users = firestore_db.collection("workers").where(
-        filter=FieldFilter("worker_id", "==", user.worker_id)
-    ).limit(1).stream()
 
+    users = firestore_db.collection("workers").where(
+        filter=FieldFilter(
+            "worker_id",
+            "==",
+            user.worker_id
+        )
+    ).limit(1).stream()
 
     existing_user = next(users, None)
 
-    # User does not exist
     if existing_user is None:
         return {
             "status": False,
@@ -110,17 +94,18 @@ def login(user: WorkerLogin):
 
     user_data = existing_user.to_dict()
 
-    # Check password with Hashed Password
-    if not verify_password(hashed_password = user_data["password"] , password = user.password):
+    if not verify_password(
+        hashed_password=user_data["password"],
+        password=user.password
+    ):
         return {
             "status": False,
             "message": "INCORRECT_PASSWORD",
             "user_id": None
         }
 
-    user_id = user_data['user_id']
+    user_id = user_data["user_id"]
 
-    # Generate tokens
     access_token = create_access_token(user_id=user_id)
     refresh_token = create_refresh_token(user_id=user_id)
 
@@ -134,13 +119,11 @@ def login(user: WorkerLogin):
 
 @router.get("/data")
 def get_data(payload: dict = Depends(get_current_user)):
-    # Get user ID from JWT payload
+
     user_id = payload["sub"]
 
-    # Fetch worker document
     user = firestore_db.collection("workers").document(user_id).get()
 
-    # Check whether the worker exists
     if not user.exists:
         return {
             "status": False,
@@ -148,7 +131,6 @@ def get_data(payload: dict = Depends(get_current_user)):
             "user_data": None
         }
 
-    # Extract worker data
     user_data = user.to_dict()
 
     return {
@@ -168,130 +150,126 @@ async def accept_pickup(
     payload: dict = Depends(get_current_user)
 ):
 
-    # Get user ID from JWT payload
     user_id = payload["sub"]
-
-    # Find worker by worker ID
-    worker_document = firestore_db.collection("workers").document(user_id).get()
-
-    if not worker_document.exists:
-        return {
-            "status": False,
-            "message": "Worker does not exist",
-        }
-
-    # Extract pickup acceptance data
     pickup_id = pickup_acceptance_request_data.pickup_id
 
-    # Generate server-side acceptance timestamp
-    pickup_accepted_time = datetime.now(timezone.utc).isoformat()
+    worker_document = firestore_db.collection(
+        "workers"
+    ).document(user_id).get()
 
-    # Real-time pickup status reference
-    pickups_status_reference = realtime_db.reference("pickups/status")
-    pickup_status_reference = pickups_status_reference.child(pickup_id)
+    if not worker_document.exists:
+        raise HTTPException(
+            status_code=404,
+            detail="WORKER_NOT_FOUND"
+        )
 
-    # Atomic pickup data claim
-    def claim_pickup(current_data):
+    assigned_reference = realtime_db.reference(
+        f"pickups/assigned/{pickup_id}"
+    )
+
+    if assigned_reference.get() is not True:
+        raise HTTPException(
+            status_code=409,
+            detail="PICKUP_NOT_ASSIGNED"
+        )
+
+    pickup_data_reference = realtime_db.reference(
+        f"pickups/pickup_data/{pickup_id}"
+    )
+
+    pickup_data = pickup_data_reference.get()
+
+    if not pickup_data:
+        raise HTTPException(
+            status_code=404,
+            detail="PICKUP_DATA_NOT_FOUND"
+        )
+
+    household_id = pickup_data["household_id"]
+
+    household_reference = realtime_db.reference(
+        f"households/{household_id}"
+    )
+
+    accepted_time = datetime.now(timezone.utc).isoformat()
+
+    def accept_assignment(current_data):
 
         if not current_data:
             return current_data
 
-        if current_data.get("status") != "requested":
+        if (
+            current_data.get("pickup_id") != pickup_id
+            or current_data.get("status") != "assigned"
+        ):
             return current_data
 
-        current_data["status"] = "assigned"
+        current_data["status"] = "accepted"
         current_data["worker_id"] = user_id
-        current_data["accepted_at"] = pickup_accepted_time
+        current_data["accepted_at"] = accepted_time
 
         return current_data
 
-    claimed_data = pickup_status_reference.transaction(claim_pickup)
+    accepted_data = household_reference.transaction(
+        accept_assignment
+    )
 
-    # Check whether pickup was successfully claimed
     if (
-        not claimed_data
-        or claimed_data.get("status") != "assigned"
-        or claimed_data.get("worker_id") != user_id
+        not accepted_data
+        or accepted_data.get("pickup_id") != pickup_id
+        or accepted_data.get("status") != "accepted"
+        or accepted_data.get("worker_id") != user_id
     ):
-        return {
-            "status": False,
-            "message": "Pickup already accepted or does not exist",
-        }
+        raise HTTPException(
+            status_code=409,
+            detail="PICKUP_ALREADY_ACCEPTED_OR_UNAVAILABLE"
+        )
 
-    # Real-time pickup request reference
-    pickup_request_reference = realtime_db.reference("pickups/requests")
+    try:
 
-    # Fetch pickup request data
-    pickup_request_data = pickup_request_reference.child(pickup_id).get()
+        realtime_db.reference().update({
+            f"pickups/assigned/{pickup_id}": None,
+            f"pickups/accepted/{pickup_id}": True,
+            f"workers/{user_id}/accepted/{pickup_id}": True,
+        })
 
-    print(pickup_request_data)
+    except Exception:
 
-    if pickup_request_data is None:
-
-        # Roll back the claim if request data is missing
-        def rollback_claim(current_data):
+        def rollback_acceptance(current_data):
 
             if (
                 current_data
+                and current_data.get("pickup_id") == pickup_id
                 and current_data.get("worker_id") == user_id
-                and current_data.get("status") == "assigned"
+                and current_data.get("status") == "accepted"
             ):
+                current_data["status"] = "assigned"
                 current_data.pop("worker_id", None)
                 current_data.pop("accepted_at", None)
 
             return current_data
 
-        pickup_status_reference.transaction(rollback_claim)
+        household_reference.transaction(rollback_acceptance)
 
-        return {
-            "status": False,
-            "message": "Pickup data does not exist",
-        }
-
-    # Save accepted pickup data
-    realtime_db.reference(
-        "pickups/accepted"
-    ).child(pickup_id).set({
-        "pickup_id": pickup_id,
-        "household_id": pickup_request_data["user_id"],
-        "household_name": pickup_request_data["user_name"],
-        "worker_id": user_id,
-        "accepted_at": pickup_accepted_time,
-        "pickup_data": {
-            "time": pickup_request_data["time"],
-            "coordinate": {
-                "latitude": pickup_request_data["coordinate"]["latitude"],
-                "longitude": pickup_request_data["coordinate"]["longitude"],
-            },
-            "qna": pickup_request_data["qna"],
-        }
-    })
-
-    # Add pickup ID to worker's accepted pickups
-    worker_pickups_reference = realtime_db.reference(
-        f"workers/accepted/{user_id}"
-    )
-
-    worker_pickups_reference.child(pickup_id).set(True)
-
-    # Delete pickup from pending requests
-    pickup_request_reference.child(pickup_id).delete()
+        raise HTTPException(
+            status_code=500,
+            detail="PICKUP_ACCEPTANCE_FAILED"
+        )
 
     return {
         "status": True,
         "message": "Pickup has been accepted successfully",
         "pickup_id": pickup_id,
-        "accepted_at": pickup_accepted_time,
+        "accepted_at": accepted_time
     }
 
 @router.post("/refresh")
 def get_access_token(
     request_data: dict = Depends(get_refresh_token)
 ):
-    # Get user ID
+
     user_id = request_data["sub"]
 
-    # Check whether the user exists
     user = firestore_db.collection("workers").document(user_id).get()
 
     if not user.exists:
@@ -301,7 +279,6 @@ def get_access_token(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    # Generate a new access token
     access_token = create_access_token(user_id=user_id)
 
     return {
@@ -316,179 +293,249 @@ def get_access_token(
 async def get_accepted_pickups(
     payload: dict = Depends(get_current_user)
 ):
-    # Get worker ID from JWT payload
+
     user_id = payload["sub"]
 
-    # Verify worker exists
-    worker_document = firestore_db.collection("workers").document(user_id).get()
+    worker_document = firestore_db.collection(
+        "workers"
+    ).document(user_id).get()
 
     if not worker_document.exists:
-        return {
-            "status": False,
-            "message": "Worker does not exist",
-        }
+        raise HTTPException(
+            status_code=404,
+            detail="WORKER_NOT_FOUND"
+        )
 
-    # Get worker's accepted pickup IDs
     worker_pickups_reference = realtime_db.reference(
-        f"workers/accepted/{user_id}"
+        f"workers/{user_id}/accepted"
     )
 
-    worker_pickups_data = worker_pickups_reference.get()
-
-    if not worker_pickups_data:
-        return {
-            "status": True,
-            "message": "No accepted pickups found",
-            "pickup_count": 0,
-            "pickups": [],
-        }
-
-    # Get all accepted pickup records
-    accepted_pickups_reference = realtime_db.reference("pickups/accepted")
-    accepted_pickups_data = accepted_pickups_reference.get() or {}
+    worker_pickups_data = worker_pickups_reference.get() or {}
 
     accepted_pickups = []
 
-    for pickup_id in worker_pickups_data.keys():
+    for pickup_id in worker_pickups_data:
 
-        pickup_data = accepted_pickups_data.get(pickup_id)
+        pickup_data = realtime_db.reference(
+            f"pickups/pickup_data/{pickup_id}"
+        ).get()
 
         if not pickup_data:
             continue
 
-        # Verify pickup belongs to this worker
-        if pickup_data.get("worker_id") == user_id:
-            accepted_pickups.append({
-                **pickup_data,
-                "pickup_id": pickup_id,
-            })
+        household_id = pickup_data["household_id"]
+
+        household_reference = realtime_db.reference(
+            f"households/{household_id}"
+        )
+
+        household_data = household_reference.get() or {}
+
+        if (
+            household_data.get("worker_id") != user_id
+            or household_data.get("pickup_id") != pickup_id
+            or household_data.get("status") not in ("accepted", "completed")
+        ):
+            continue
+
+        household_profile = firestore_db.collection(
+            "households"
+        ).document(household_id).get()
+
+        household_profile_data = (
+            household_profile.to_dict()
+            if household_profile.exists
+            else {}
+        )
+
+        accepted_pickups.append({
+            "pickup_id": pickup_id,
+            "household_id": household_id,
+            "household_name": household_profile_data.get("user_name"),
+            "worker_id": user_id,
+            "accepted_at": household_data.get("accepted_at"),
+            "pickup_data": {
+                "time": pickup_data.get("time"),
+                "coordinate": pickup_data.get("coordinate"),
+                "qna": pickup_data.get("qna")
+            }
+        })
 
     return {
         "status": True,
         "message": "Accepted pickups retrieved successfully",
         "pickup_count": len(accepted_pickups),
-        "pickups": accepted_pickups,
+        "pickups": accepted_pickups
     }
 
 @router.websocket("/pickups")
-async def pickup_stream(websocket: WebSocket ):
+async def pickup_stream(websocket: WebSocket):
 
     await websocket.accept()
 
     user_id = None
+    listener = None
+    message_task = None
+    pickup_task = None
 
-    try :
+    try:
+
         token = await asyncio.wait_for(
-            websocket.receive_text() ,
-            timeout = 10
+            websocket.receive_text(),
+            timeout=10
         )
 
-        payload = validate_token(token = token , tokentype = "access")
+        payload = validate_token(
+            token=token,
+            tokentype="access"
+        )
 
-        if not payload :
+        if not payload:
             await websocket.close(
                 code=1008,
-                reason="Invalid access token",
+                reason="Invalid access token"
             )
             return
 
         user_id = payload["sub"]
 
-        print("Connected user:", user_id)
+        worker = await asyncio.to_thread(
+            firestore_db.collection("workers").document(user_id).get
+        )
 
-        pickup_DB = db.reference("pickups/requests")
+        if not worker.exists:
+            await websocket.close(
+                code=1008,
+                reason="Worker does not exist"
+            )
+            return
+
+        assigned_reference = realtime_db.reference(
+            "pickups/assigned"
+        )
 
         queue = asyncio.Queue()
-
         loop = asyncio.get_running_loop()
 
         def pickup_listener(event):
-            pickup_data = pickup_DB.get()
 
-            if pickup_data is None:
-                pickup_data = {}
+            assigned_data = event.data
+
+            if not isinstance(assigned_data, dict):
+                assigned_data = {}
 
             asyncio.run_coroutine_threadsafe(
-                queue.put(pickup_data),
+                queue.put(assigned_data),
                 loop
             )
 
+        listener = assigned_reference.listen(pickup_listener)
+
+        initial_data = assigned_reference.get() or {}
+
+
+        await queue.put(initial_data)
+
         async def receive():
-            while True :
+
+            while True:
+
                 message = await websocket.receive_text()
-                if message == "logout" : 
+
+                if message == "logout":
+                    print("Worker Logged out")
                     return
 
         async def pickup():
+
             while True:
-                pickup_data = await queue.get()
+
+                worker_assignments = await queue.get()
+
+                if not isinstance(worker_assignments, dict):
+                    worker_assignments = {}
 
                 pickup_list = []
-            
-                for pickupid, pickup in pickup_data.items():
 
-                    pickup_userid = pickup["user_id"]
+                for pickup_id, assigned in worker_assignments.items():
 
-                    user =  await asyncio.to_thread(
+                    if assigned is not True:
+                        continue
+
+                    pickup_data = realtime_db.reference(
+                        f"pickups/pickup_data/{pickup_id}"
+                    ).get()
+
+                    if not pickup_data:
+                        continue
+
+                    household_id = pickup_data["household_id"]
+
+                    household_data = realtime_db.reference(
+                        f"households/{household_id}"
+                    ).get() or {}
+
+                    if household_data.get("status") != "assigned":
+                        continue
+
+                    household = await asyncio.to_thread(
                         firestore_db.collection("households").document(
-                        pickup_userid).get
+                            household_id
+                        ).get
                     )
-                    
-                    if user.exists:
 
-                        userdata = user.to_dict()
+                    if not household.exists:
+                        continue
 
-                        pickup_item = {
-                            "pickupid": pickupid,
-                            "user_id": pickup_userid,
-                            "user_name": userdata["user_name"],
-                            "time": pickup["time"],
-                            "coordinates": pickup["coordinate"],
-                            "qna": pickup["qna"],
-                        }
+                    household_profile = household.to_dict()
 
-                        pickup_list.append(pickup_item)
+                    pickup_list.append({
+                        "pickupid": pickup_id,
+                        "user_id": household_id,
+                        "user_name": household_profile["user_name"],
+                        "time": pickup_data.get("time"),
+                        "coordinates": pickup_data.get("coordinate"),
+                        "qna": pickup_data.get("qna")
+                    })
 
                 await websocket.send_json(pickup_list)
 
-        listener = pickup_DB.listen(pickup_listener)
-
         message_task = asyncio.create_task(receive())
         pickup_task = asyncio.create_task(pickup())
+        
+        done, pending = await asyncio.wait(
+            [message_task, pickup_task],
+            return_when=asyncio.FIRST_COMPLETED
+        )
 
-        try :
-            done, pending = await asyncio.wait(
-                [message_task, pickup_task],
-                return_when=asyncio.FIRST_COMPLETED
-            )
+        for task in pending:
+            task.cancel()
 
-            for task in pending:
-                task.cancel()
+        await asyncio.gather(
+            *pending,
+            return_exceptions=True
+        )
 
-            await asyncio.gather(*pending, return_exceptions=True)
-
-            for task in done:
-                task.result()
-
-            if message_task in done:
-                print("Worker logged out:", user_id)
-
-        except WebSocketDisconnect:
-            print("Disconnected user:", user_id)
-            
-        finally:
-            message_task.cancel()
-            pickup_task.cancel()
-            
-            await asyncio.gather(
-                message_task, pickup_task,
-                return_exceptions=True
-            )
-            await asyncio.to_thread(listener.close)
+        for task in done:
+            task.result()
 
     except asyncio.TimeoutError:
-            await websocket.close(
-                code=1008,
-                reason="Authentication timeout",
-            )
 
+        await websocket.close(
+            code=1008,
+            reason="Authentication timeout"
+        )
+
+    except WebSocketDisconnect:
+        pass
+
+    finally:
+
+        if message_task is not None and not message_task.done():
+            message_task.cancel()
+
+        if pickup_task is not None and not pickup_task.done():
+            pickup_task.cancel()
+
+        if listener is not None:
+            await asyncio.to_thread(listener.close)

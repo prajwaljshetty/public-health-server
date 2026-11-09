@@ -16,3 +16,7 @@ class HouseholdRequestData(BaseModel):
     time : datetime
     coordinate : Coordinate
     qna: list[int]
+
+class RegisterCode(BaseModel):
+    pickup_id: str
+    code: str
