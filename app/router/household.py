@@ -366,6 +366,11 @@ async def pickup_status_stream(
 
         owner_id = pickup_owner_db.get()
 
+        if owner_id is None:
+            owner_id = db.reference(
+                f"pickups/accepted/{pickup_id}/household_id"
+            ).get()
+
         if owner_id != user_id:
             await websocket.send_json({
                 "status": False,

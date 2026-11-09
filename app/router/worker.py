@@ -1,4 +1,5 @@
 import asyncio
+import re
 import uuid
 
 from fastapi import (
@@ -54,13 +55,12 @@ def _highest_existing_worker_number() -> int:
 
     for document in firestore_db.collection("workers").stream():
         worker_id = (document.to_dict() or {}).get("worker_id", "")
-        if not isinstance(worker_id, str) or not worker_id.startswith("PW-"):
+        if not isinstance(worker_id, str):
             continue
 
-        try:
-            highest = max(highest, int(worker_id.removeprefix("PW-")))
-        except ValueError:
-            continue
+        match = re.fullmatch(r"PW-?(\d+)", worker_id.strip(), re.IGNORECASE)
+        if match:
+            highest = max(highest, int(match.group(1)))
 
     return highest
 
@@ -73,8 +73,8 @@ def _generate_worker_id() -> str:
 
     @transactional
     def allocate(transaction):
-        counter = transaction.get(counter_ref)
-        counter_data = counter.to_dict() if counter.exists else {}
+        counter = next(transaction.get(counter_ref), None)
+        counter_data = counter.to_dict() if counter and counter.exists else {}
         next_number = max(
             first_available,
             int(counter_data.get("next_number", 101)),
@@ -100,7 +100,17 @@ def add_worker(worker: WorkerCreate):
             detail="Worker name cannot be empty",
         )
 
-    worker_id = _generate_worker_id()
+    worker_id = worker.worker_id.strip().upper() if worker.worker_id else _generate_worker_id()
+
+    existing_worker = firestore_db.collection("workers").where(
+        filter=FieldFilter("worker_id", "==", worker_id)
+    ).limit(1).stream()
+    if next(existing_worker, None):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="WORKER_ID_ALREADY_EXISTS",
+        )
+
     user_id = str(uuid.uuid4())
 
     firestore_db.collection("workers").document(user_id).set({
@@ -141,6 +151,29 @@ def get_all_workers():
         "status": True,
         "message": "Workers fetched successfully",
         "workers": workers,
+    }
+
+
+@router.get("/{user_id}")
+def get_worker(user_id: str):
+    """Return one Firebase worker without exposing the password hash."""
+    document = firestore_db.collection("workers").document(user_id).get()
+    if not document.exists:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="WORKER_NOT_FOUND",
+        )
+
+    data = document.to_dict() or {}
+    return {
+        "status": True,
+        "message": "Worker fetched successfully",
+        "worker": {
+            "user_id": data.get("user_id", document.id),
+            "worker_id": data.get("worker_id", ""),
+            "name": data.get("user_name", ""),
+            "phoneno": data.get("phoneno", ""),
+        },
     }
 
 
@@ -545,19 +578,16 @@ async def pickup_stream(websocket: WebSocket ):
         print("Connected user:", user_id)
 
         pickup_DB = db.reference("pickups/requests")
+        assigned_pickups_DB = db.reference(f"workers/accepted/{user_id}")
+        accepted_pickups_DB = db.reference("pickups/accepted")
 
         queue = asyncio.Queue()
 
         loop = asyncio.get_running_loop()
 
         def pickup_listener(event):
-            pickup_data = pickup_DB.get()
-
-            if pickup_data is None:
-                pickup_data = {}
-
             asyncio.run_coroutine_threadsafe(
-                queue.put(pickup_data),
+                queue.put(True),
                 loop
             )
 
@@ -569,7 +599,15 @@ async def pickup_stream(websocket: WebSocket ):
 
         async def pickup():
             while True:
-                pickup_data = await queue.get()
+                await queue.get()
+
+                pickup_data = await asyncio.to_thread(pickup_DB.get) or {}
+                assigned_ids = await asyncio.to_thread(
+                    assigned_pickups_DB.get
+                ) or {}
+                accepted_data = await asyncio.to_thread(
+                    accepted_pickups_DB.get
+                ) or {}
 
                 pickup_list = []
             
@@ -597,9 +635,28 @@ async def pickup_stream(websocket: WebSocket ):
 
                         pickup_list.append(pickup_item)
 
+                for pickupid in assigned_ids.keys():
+                    accepted = accepted_data.get(pickupid)
+                    if not isinstance(accepted, dict):
+                        continue
+                    if accepted.get("worker_id") != user_id:
+                        continue
+
+                    details = accepted.get("pickup_data") or {}
+                    pickup_list.append({
+                        "pickupid": pickupid,
+                        "user_id": accepted.get("household_id"),
+                        "user_name": accepted.get("household_name", ""),
+                        "time": details.get("time"),
+                        "coordinates": details.get("coordinate"),
+                        "qna": details.get("qna", []),
+                        "status": "assigned",
+                    })
+
                 await websocket.send_json(pickup_list)
 
-        listener = pickup_DB.listen(pickup_listener)
+        request_listener = pickup_DB.listen(pickup_listener)
+        assignment_listener = assigned_pickups_DB.listen(pickup_listener)
 
         message_task = asyncio.create_task(receive())
         pickup_task = asyncio.create_task(pickup())
@@ -632,7 +689,8 @@ async def pickup_stream(websocket: WebSocket ):
                 message_task, pickup_task,
                 return_exceptions=True
             )
-            await asyncio.to_thread(listener.close)
+            await asyncio.to_thread(request_listener.close)
+            await asyncio.to_thread(assignment_listener.close)
 
     except asyncio.TimeoutError:
             await websocket.close(
