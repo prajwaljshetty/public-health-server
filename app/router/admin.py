@@ -12,16 +12,20 @@ router = APIRouter()
 @router.get("/pickups/requests")
 def get_pickup_requests():
     """Return pickup requests waiting in the administrator's inbox."""
-    pickups = realtime_db.reference("pickups/requests").get() or {}
-    pickup_statuses = realtime_db.reference("pickups/status").get() or {}
+    requested_pickups = realtime_db.reference("pickups/requested").get() or {}
+    pickup_data = realtime_db.reference("pickups/pickup_data").get() or {}
 
     pickup_requests = []
 
-    for pickup_id, pickup in pickups.items():
+    for pickup_id, is_requested in requested_pickups.items():
+        if is_requested is not True:
+            continue
+
+        pickup = pickup_data.get(pickup_id)
         if not isinstance(pickup, dict):
             continue
 
-        household_id = pickup.get("user_id")
+        household_id = pickup.get("household_id")
         household_data = {}
 
         if household_id:
@@ -34,21 +38,15 @@ def get_pickup_requests():
             if household.exists:
                 household_data = household.to_dict() or {}
 
-        status_data = pickup_statuses.get(pickup_id, {})
-        if isinstance(status_data, dict):
-            pickup_status = status_data.get("status")
-        else:
-            pickup_status = status_data
-
         pickup_requests.append({
-            "pickupid": pickup.get("pickupid", pickup_id),
+            "pickupid": pickup_id,
             "user_id": household_id,
             "user_name": household_data.get("user_name"),
             "phoneno": household_data.get("phoneno"),
             "time": pickup.get("time"),
             "coordinates": pickup.get("coordinate"),
             "qna": pickup.get("qna", []),
-            "status": pickup_status or pickup.get("status", "requested"),
+            "status": "requested",
         })
 
     pickup_requests.sort(
