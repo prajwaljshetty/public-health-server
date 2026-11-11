@@ -50,6 +50,9 @@ def create(user: HousholdCreate):
     firestore_db.collection("households").document(user_id).set({
         "user_id": user_id,
         "user_name": user.username,
+        "userid": user_id,
+        "role": "household",
+        "username": user.username,
         "phoneno": user.phoneno,
         "password": password,
     })
