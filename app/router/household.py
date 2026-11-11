@@ -320,7 +320,7 @@ def register_code(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="UNAUTHORIZED_PICKUP",
         )
-    
+
     def register_household_code(current_data):
         if not current_data:
             return current_data

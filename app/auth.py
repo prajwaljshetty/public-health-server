@@ -1,5 +1,6 @@
 # OS :
 import os
+from pathlib import Path
 from dotenv import load_dotenv
 
 # HTTP :
@@ -14,7 +15,7 @@ import jwt
 # HTTP Bearer :
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
-load_dotenv()
+load_dotenv(Path(__file__).resolve().parents[1] / ".env")
 
 security = HTTPBearer()
 

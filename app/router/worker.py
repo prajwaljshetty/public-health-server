@@ -1,4 +1,3 @@
-
 import asyncio
 import re
 import uuid
@@ -100,7 +99,17 @@ def add_worker(worker: WorkerCreate):
             detail="Worker name cannot be empty",
         )
 
-    worker_id = _generate_worker_id()
+    worker_id = worker.worker_id.strip().upper() if worker.worker_id else _generate_worker_id()
+
+    existing_worker = firestore_db.collection("workers").where(
+        filter=FieldFilter("worker_id", "==", worker_id)
+    ).limit(1).stream()
+    if next(existing_worker, None):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="WORKER_ID_ALREADY_EXISTS",
+        )
+
     user_id = str(uuid.uuid4())
 
     firestore_db.collection("workers").document(user_id).set({
@@ -231,14 +240,10 @@ def create_account(worker: WorkerRegister):
 
 @router.post("/login")
 def login(user: WorkerLogin):
-    
+
     # Find worker by worker ID
     users = firestore_db.collection("workers").where(
-        filter=FieldFilter(
-            "worker_id",
-            "==",
-            user.worker_id.strip().upper()
-        )
+        filter=FieldFilter("worker_id", "==", user.worker_id.strip().upper())
     ).limit(1).stream()
 
     existing_user = next(users, None)
@@ -298,7 +303,7 @@ def get_data(payload: dict = Depends(get_current_user)):
             "user_id": user_data["user_id"],
             "role": user_data["role"],
             "user_name": user_data["user_name"],
-            "phoneno": user_data["phoneno"]
+            "phoneno": user_data.get("phoneno", "")
         }
     }
 
@@ -683,7 +688,7 @@ async def pickup_stream(websocket: WebSocket):
 
         message_task = asyncio.create_task(receive())
         pickup_task = asyncio.create_task(pickup())
-        
+
         done, pending = await asyncio.wait(
             [message_task, pickup_task],
             return_when=asyncio.FIRST_COMPLETED

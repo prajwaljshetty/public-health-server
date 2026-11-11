@@ -49,3 +49,18 @@ This project is where I explore those boundaries through implementation, debuggi
 `BACKEND ENGINEERING` / `SYSTEM DESIGN` / `REAL-TIME COMMUNICATION`
 
 *Every moving part has a place.*
+
+### Render deployment
+
+Use the following settings for a Render Web Service:
+
+- Build command: `pip install -r requirements.txt`
+- Start command: `python -m uvicorn app.main:app --host 0.0.0.0 --port $PORT`
+
+Add `JWT_SECRET_KEY` and `FIREBASE_SERVICE_ACCOUNT_JSON` as Render environment
+variables. `FIREBASE_SERVICE_ACCOUNT_JSON` should contain the complete Firebase
+service-account JSON. Do not commit `serviceAccountKey.json`.
+
+For local development, you may instead set
+`FIREBASE_SERVICE_ACCOUNT_PATH=serviceAccountKey.json` in `.env`. Relative paths
+are resolved from the backend project directory.

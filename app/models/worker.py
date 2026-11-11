@@ -30,3 +30,9 @@ class WorkerLogin(BaseModel):
 
 class PickupAcceptanceRequest(BaseModel):
     pickup_id: str
+
+
+class PickupAssignmentRequest(BaseModel):
+    """Worker selected by an administrator for a pending pickup."""
+
+    worker_id: str = Field(min_length=1)
