@@ -30,7 +30,6 @@ from datetime import datetime, timezone
 from google.cloud.firestore_v1 import transactional
 from google.cloud.firestore_v1.base_query import FieldFilter
 
-# HTTP :
 # Token Creation and Validations :
 from app.auth import (
     create_access_token ,

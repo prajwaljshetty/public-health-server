@@ -1,12 +1,52 @@
+import uuid
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, HTTPException, status
+from google.cloud.firestore_v1.base_query import FieldFilter
 
 from app.firebase import firestore_db, realtime_db
-from app.models.worker import PickupAssignmentRequest
+from app.hasher import hash_password
+from app.models.worker import PickupAssignmentRequest, WorkerRegister
 
 
 router = APIRouter()
+
+
+@router.post("/createaccount")
+def create_account(worker: WorkerRegister):
+
+    users = firestore_db.collection("workers").where(
+        filter=FieldFilter(
+            "worker_id",
+            "==",
+            worker.worker_id
+        )
+    ).limit(1).stream()
+
+    if next(users, None):
+        return {
+            "status": False,
+            "message": "WORKER_ALREADY_EXISTS",
+            "user_id": None
+        }
+
+    user_id = str(uuid.uuid4())
+    password = hash_password(worker.password)
+
+    firestore_db.collection("workers").document(user_id).set({
+        "user_id": user_id,
+        "worker_id": worker.worker_id,
+        "user_name": worker.user_name,
+        "phoneno": worker.phoneno,
+        "password": password,
+        "role": "worker"
+    })
+
+    return {
+        "status": True,
+        "message": "WORKER_ACCOUNT_CREATED",
+        "user_id": user_id
+    }
 
 
 @router.get("/pickups/requests")
