@@ -12,8 +12,6 @@ from app.models.worker import WorkerRegister, WorkerLogin, PickupAcceptanceReque
 import asyncio
 from datetime import datetime, timezone
 
-import uuid
-
 from app.auth import (
     create_access_token,
     create_refresh_token,
@@ -22,6 +20,7 @@ from app.auth import (
     validate_token
 )
 
+import uuid
 from app.hasher import (
     hash_password,
     verify_password

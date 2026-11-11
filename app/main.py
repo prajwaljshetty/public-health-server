@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 
 # Routers :
-from app.router import household , worker
+from app.router import admin , household , worker
 
 # Firebase
 from app.firebase import firestore_db , realtime_db
@@ -11,6 +11,11 @@ app = FastAPI()
 @app.get("/")
 def home():
     return {"message": "Server is running"}
+
+app.include_router(
+    admin.router , 
+    prefix="/admin"
+)
 
 app.include_router(
     household.router,
