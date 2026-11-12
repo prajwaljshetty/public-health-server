@@ -1,7 +1,12 @@
+# OS :
 import asyncio
 import re
 import uuid
 
+# Date Time :
+from datetime import datetime, timezone
+
+# HTTP :
 from fastapi import (
     APIRouter,
     Depends,
@@ -11,272 +16,95 @@ from fastapi import (
     status,
 )
 
-# Model :
-from app.models.worker import (
-    PickupAcceptanceRequest,
-    WorkerCreate,
-    WorkerLogin,
-    WorkerRegister,
-    WorkerUpdate,
-)
-
 # Firebase :
 from app.firebase import db, firestore_db, realtime_db
-
-# Date Time :
-from datetime import datetime, timezone
 
 # Filter :
 from google.cloud.firestore_v1 import transactional
 from google.cloud.firestore_v1.base_query import FieldFilter
 
-# Token Creation and Validations :
+# Models :
+from app.models.worker import (
+    PickupAcceptanceRequest,
+    WorkerLogin,
+    WorkerRegister,
+)
+
+# Authentication :
 from app.auth import (
-    create_access_token ,
-    create_refresh_token ,
-    get_current_user , 
+    create_access_token,
+    create_refresh_token,
+    get_current_user,
     get_refresh_token,
     validate_token,
 )
 
+# Password :
 from app.hasher import (
     hash_password,
-    verify_password
+    verify_password,
 )
 
 router = APIRouter()
 
 
-def _highest_existing_worker_number() -> int:
-    """Return the highest numeric PW worker ID already stored in Firestore."""
-    highest = 100
+@router.post("/login")
+def login(login_data: WorkerLogin):
 
-    for document in firestore_db.collection("workers").stream():
-        worker_id = (document.to_dict() or {}).get("worker_id", "")
-        if not isinstance(worker_id, str):
-            continue
-
-        match = re.fullmatch(r"PW-?(\d+)", worker_id.strip(), re.IGNORECASE)
-        if match:
-            highest = max(highest, int(match.group(1)))
-
-    return highest
-
-
-def _generate_worker_id() -> str:
-    """Allocate a unique sequential worker ID starting at PW-101."""
-    counter_ref = firestore_db.collection("metadata").document("worker_counter")
-    first_available = _highest_existing_worker_number() + 1
-    transaction = firestore_db.transaction()
-
-    @transactional
-    def allocate(transaction):
-        counter = next(transaction.get(counter_ref), None)
-        counter_data = counter.to_dict() if counter and counter.exists else {}
-        next_number = max(
-            first_available,
-            int(counter_data.get("next_number", 101)),
-        )
-
-        transaction.set(
-            counter_ref,
-            {"next_number": next_number + 1},
-            merge=True,
-        )
-        return f"PW-{next_number}"
-
-    return allocate(transaction)
-
-
-@router.post("/add", status_code=status.HTTP_201_CREATED)
-def add_worker(worker: WorkerCreate):
-    """Create an administrator-provisioned worker with an automatic PW ID."""
-    name = worker.name.strip()
-    if not name:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="Worker name cannot be empty",
-        )
-
-    worker_id = worker.worker_id.strip().upper() if worker.worker_id else _generate_worker_id()
-
-    existing_worker = firestore_db.collection("workers").where(
-        filter=FieldFilter("worker_id", "==", worker_id)
-    ).limit(1).stream()
-    if next(existing_worker, None):
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="WORKER_ID_ALREADY_EXISTS",
-        )
-
-    user_id = str(uuid.uuid4())
-
-    firestore_db.collection("workers").document(user_id).set({
-        "user_id": user_id,
-        "worker_id": worker_id,
-        "user_name": name,
-        "phoneno": "",
-        "password": hash_password(worker.password),
-        "role": "worker",
-    })
-
-    return {
-        "status": True,
-        "message": "Worker added successfully",
-        "worker": {
-            "user_id": user_id,
-            "worker_id": worker_id,
-            "name": name,
-        },
-    }
-
-
-@router.get("/all")
-def get_all_workers():
-    """Return workers created by the administrator without password hashes."""
-    workers = []
-
-    for document in firestore_db.collection("workers").stream():
-        data = document.to_dict() or {}
-        workers.append({
-            "user_id": data.get("user_id", document.id),
-            "worker_id": data.get("worker_id", ""),
-            "name": data.get("user_name", ""),
-        })
-
-    workers.sort(key=lambda item: item["worker_id"])
-    return {
-        "status": True,
-        "message": "Workers fetched successfully",
-        "workers": workers,
-    }
-
-
-@router.patch("/{user_id}")
-def update_worker(user_id: str, worker: WorkerUpdate):
-    """Update a worker's name and optionally replace their login password."""
-    worker_reference = firestore_db.collection("workers").document(user_id)
-    worker_document = worker_reference.get()
-
-    if not worker_document.exists:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="WORKER_NOT_FOUND")
-
-    name = worker.name.strip()
-    if not name:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="Worker name cannot be empty",
-        )
-
-    updates = {"user_name": name}
-    if worker.password:
-        updates["password"] = hash_password(worker.password)
-
-    worker_reference.update(updates)
-    data = worker_document.to_dict() or {}
-    return {
-        "status": True,
-        "message": "Worker updated successfully",
-        "worker": {
-            "user_id": user_id,
-            "worker_id": data.get("worker_id", ""),
-            "name": name,
-        },
-    }
-
-
-@router.delete("/{user_id}")
-def delete_worker(user_id: str):
-    """Delete a worker account so its credentials can no longer be used."""
-    worker_reference = firestore_db.collection("workers").document(user_id)
-    if not worker_reference.get().exists:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="WORKER_NOT_FOUND")
-
-    worker_reference.delete()
-    return {"status": True, "message": "Worker deleted successfully"}
-
-@router.post("/createaccount")
-def create_account(worker: WorkerRegister):
-
-    users = firestore_db.collection("workers").where(
+    user = firestore_db.collection("workers").where(
         filter=FieldFilter(
             "worker_id",
             "==",
-            worker.worker_id
+            login_data.worker_id.strip().upper()
         )
     ).limit(1).stream()
 
-    if next(users, None):
-        return {
-            "status": False,
-            "message": "WORKER_ALREADY_EXISTS",
-            "user_id": None
-        }
+    existing_user = next(user, None)
 
-    user_id = str(uuid.uuid4())
-    password = hash_password(worker.password)
+    if not existing_user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="USER_NOT_FOUND",
+            headers={"WWW-Authenticate": "Bearer"}
+        )
 
-    firestore_db.collection("workers").document(user_id).set({
-        "user_id": user_id,
-        "worker_id": worker.worker_id,
-        "user_name": worker.user_name,
-        "phoneno": worker.phoneno,
-        "password": password,
-        "role": "worker"
-    })
+    user_data = existing_user.to_dict() or {}
 
-    access_token = create_access_token(user_id=user_id)
-    refresh_token = create_refresh_token(user_id=user_id)
-
-    return {
-        "status": True,
-        "message": "Account created successfully",
-        "user_id": user_id,
-        "access_token": access_token,
-        "refresh_token": refresh_token
-    }
-
-
-@router.post("/login")
-def login(user: WorkerLogin):
-
-    # Find worker by worker ID
-    users = firestore_db.collection("workers").where(
-        filter=FieldFilter("worker_id", "==", user.worker_id.strip().upper())
-    ).limit(1).stream()
-
-    existing_user = next(users, None)
-
-    if existing_user is None:
-        return {
-            "status": False,
-            "message": "USER_NOT_FOUND",
-            "user_id": None
-        }
-
-    user_data = existing_user.to_dict()
+    if user_data["role"] != "worker":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="INSUFFICIENT_PERMISSIONS"
+        )
 
     if not verify_password(
         hashed_password=user_data["password"],
-        password=user.password
+        password=login_data.password,
     ):
-        return {
-            "status": False,
-            "message": "INCORRECT_PASSWORD",
-            "user_id": None
-        }
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="INCORRECT_PASSWORD",
+            headers={"WWW-Authenticate": "Bearer"}
+        )
 
     user_id = user_data["user_id"]
 
-    access_token = create_access_token(user_id=user_id)
-    refresh_token = create_refresh_token(user_id=user_id)
+    access_token = create_access_token(
+        user_id=user_id,
+        role="worker"
+    )
+
+    refresh_token = create_refresh_token(
+        user_id=user_id,
+        role="worker"
+    )
 
     return {
         "status": True,
-        "message": "Login successful",
+        "message": "LOGIN_SUCCESSFUL",
         "user_id": user_id,
         "access_token": access_token,
-        "refresh_token": refresh_token
+        "refresh_token": refresh_token,
+        "token_type": "bearer"
     }
 
 @router.get("/data")
@@ -287,46 +115,28 @@ def get_data(payload: dict = Depends(get_current_user)):
     user = firestore_db.collection("workers").document(user_id).get()
 
     if not user.exists:
-        return {
-            "status": False,
-            "message": "User does not exist",
-            "user_data": None
-        }
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="USER_NOT_FOUND"
+        )
 
-    user_data = user.to_dict()
+    user_data = user.to_dict() or {}
+
+    if payload["role"] != "worker" or user_data["role"] != "worker":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="INSUFFICIENT_PERMISSIONS"
+        )
 
     return {
         "status": True,
-        "message": "User data fetched successfully",
+        "message": "USER_DATA_FETCHED",
         "user_data": {
             "user_id": user_data["user_id"],
             "role": user_data["role"],
             "user_name": user_data["user_name"],
             "phoneno": user_data.get("phoneno", "")
         }
-    }
-
-
-@router.get("/{user_id}")
-def get_worker(user_id: str):
-    """Return one worker without exposing the password hash."""
-    document = firestore_db.collection("workers").document(user_id).get()
-    if not document.exists:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="WORKER_NOT_FOUND",
-        )
-
-    data = document.to_dict() or {}
-    return {
-        "status": True,
-        "message": "Worker fetched successfully",
-        "worker": {
-            "user_id": data.get("user_id", document.id),
-            "worker_id": data.get("worker_id", ""),
-            "name": data.get("user_name", ""),
-            "phoneno": data.get("phoneno", ""),
-        },
     }
 
 @router.post("/pickup/accept")
@@ -338,23 +148,31 @@ async def accept_pickup(
     user_id = payload["sub"]
     pickup_id = pickup_acceptance_request_data.pickup_id
 
-    worker_document = firestore_db.collection(
+    user = firestore_db.collection(
         "workers"
     ).document(user_id).get()
 
-    if not worker_document.exists:
+    if not user.exists:
         raise HTTPException(
-            status_code=404,
-            detail="WORKER_NOT_FOUND"
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="USER_NOT_FOUND"
         )
 
+    user_data = user.to_dict() or {}
+
+    if payload["role"] != "worker" or user_data["role"] != "worker":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="INSUFFICIENT_PERMISSIONS"
+        )
+    
     assigned_reference = realtime_db.reference(
         f"pickups/assigned/{pickup_id}"
     )
 
     if assigned_reference.get() is not True:
         raise HTTPException(
-            status_code=409,
+            status_code=status.HTTP_409_CONFLICT,
             detail="PICKUP_NOT_ASSIGNED"
         )
 
@@ -366,7 +184,7 @@ async def accept_pickup(
 
     if not pickup_data:
         raise HTTPException(
-            status_code=404,
+            status_code=status.HTTP_404_NOT_FOUND,
             detail="PICKUP_DATA_NOT_FOUND"
         )
 
@@ -406,7 +224,7 @@ async def accept_pickup(
         or accepted_data.get("worker_id") != user_id
     ):
         raise HTTPException(
-            status_code=409,
+            status_code= status.HTTP_409_CONFLICT,
             detail="PICKUP_ALREADY_ACCEPTED_OR_UNAVAILABLE"
         )
 
@@ -437,7 +255,7 @@ async def accept_pickup(
         household_reference.transaction(rollback_acceptance)
 
         raise HTTPException(
-            status_code=500,
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="PICKUP_ACCEPTANCE_FAILED"
         )
 
@@ -450,56 +268,70 @@ async def accept_pickup(
 
 @router.post("/refresh")
 def get_access_token(
-    request_data: dict = Depends(get_refresh_token)
+    payload: dict = Depends(get_refresh_token)
 ):
 
-    user_id = request_data["sub"]
+    user_id = payload["sub"]
 
     user = firestore_db.collection("workers").document(user_id).get()
 
     if not user.exists:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="USER_NO_LONGER_EXIST",
-            headers={"WWW-Authenticate": "Bearer"},
+            detail="USER_NO_LONGER_EXISTS",
+            headers={"WWW-Authenticate": "Bearer"}
+        )
+
+    user_data = user.to_dict() or {}
+
+    if payload["role"] != "worker" or user_data["role"] != "worker":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="INSUFFICIENT_PERMISSIONS"
         )
 
     access_token = create_access_token(user_id=user_id)
 
     return {
         "status": True,
-        "message": "Access token refreshed successfully",
+        "message": "ACCESS_TOKEN_REFRESHED",
         "access_token": access_token,
         "token_type": "bearer",
         "expires_in": 900
     }
 
 @router.get("/pickup/accepted/data")
-async def get_accepted_pickups(
+def get_accepted_pickups(
     payload: dict = Depends(get_current_user)
 ):
 
     user_id = payload["sub"]
 
-    worker_document = firestore_db.collection(
+    user = firestore_db.collection(
         "workers"
     ).document(user_id).get()
 
-    if not worker_document.exists:
+    if not user.exists:
         raise HTTPException(
-            status_code=404,
-            detail="WORKER_NOT_FOUND"
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="USER_NOT_FOUND"
         )
 
-    worker_pickups_reference = realtime_db.reference(
-        f"workers/{user_id}/accepted"
-    )
+    user_data = user.to_dict() or {}
 
-    worker_pickups_data = worker_pickups_reference.get() or {}
+    if payload["role"] != "worker" or user_data["role"] != "worker":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="INSUFFICIENT_PERMISSIONS"
+        )
+
+    worker_pickups = realtime_db.reference(
+        f"workers/{user_id}/accepted"
+    ).get() or {}
 
     accepted_pickups = []
 
-    for pickup_id in worker_pickups_data:
+    for pickup_id in worker_pickups:
 
         pickup_data = realtime_db.reference(
             f"pickups/pickup_data/{pickup_id}"
@@ -508,13 +340,14 @@ async def get_accepted_pickups(
         if not pickup_data:
             continue
 
-        household_id = pickup_data["household_id"]
+        household_id = pickup_data.get("household_id")
 
-        household_reference = realtime_db.reference(
+        if not household_id:
+            continue
+
+        household_data = realtime_db.reference(
             f"households/{household_id}"
-        )
-
-        household_data = household_reference.get() or {}
+        ).get() or {}
 
         if (
             household_data.get("worker_id") != user_id
@@ -528,7 +361,7 @@ async def get_accepted_pickups(
         ).document(household_id).get()
 
         household_profile_data = (
-            household_profile.to_dict()
+            household_profile.to_dict() or {}
             if household_profile.exists
             else {}
         )
@@ -538,6 +371,7 @@ async def get_accepted_pickups(
             "household_id": household_id,
             "household_name": household_profile_data.get("user_name"),
             "worker_id": user_id,
+            "status": household_data.get("status"),
             "accepted_at": household_data.get("accepted_at"),
             "pickup_data": {
                 "time": pickup_data.get("time"),
@@ -548,7 +382,7 @@ async def get_accepted_pickups(
 
     return {
         "status": True,
-        "message": "Accepted pickups retrieved successfully",
+        "message": "ACCEPTED_PICKUPS_RETRIEVED",
         "pickup_count": len(accepted_pickups),
         "pickups": accepted_pickups
     }
@@ -558,7 +392,6 @@ async def pickup_stream(websocket: WebSocket):
 
     await websocket.accept()
 
-    user_id = None
     listener = None
     message_task = None
     pickup_task = None
@@ -578,20 +411,33 @@ async def pickup_stream(websocket: WebSocket):
         if not payload:
             await websocket.close(
                 code=1008,
-                reason="Invalid access token"
+                reason="INVALID_OR_EXPIRED_ACCESS_TOKEN"
             )
             return
 
         user_id = payload["sub"]
 
-        worker = await asyncio.to_thread(
-            firestore_db.collection("workers").document(user_id).get
+        user = await asyncio.to_thread(
+            firestore_db.collection("workers")
+            .document(user_id).get
         )
 
-        if not worker.exists:
+        if not user.exists:
             await websocket.close(
                 code=1008,
-                reason="Worker does not exist"
+                reason="USER_NO_LONGER_EXISTS"
+            )
+            return
+
+        user_data = user.to_dict() or {}
+
+        if (
+            payload.get("role") != "worker"
+            or user_data.get("role") != "worker"
+        ):
+            await websocket.close(
+                code=1008,
+                reason="INSUFFICIENT_PERMISSIONS"
             )
             return
 
@@ -599,27 +445,19 @@ async def pickup_stream(websocket: WebSocket):
             "pickups/assigned"
         )
 
-        queue = asyncio.Queue()
+        queue = asyncio.Queue(maxsize=1)
         loop = asyncio.get_running_loop()
+
+        def enqueue_update():
+
+            if not queue.full():
+                queue.put_nowait(True)
 
         def pickup_listener(event):
 
-            assigned_data = event.data
-
-            if not isinstance(assigned_data, dict):
-                assigned_data = {}
-
-            asyncio.run_coroutine_threadsafe(
-                queue.put(assigned_data),
-                loop
-            )
+            loop.call_soon_threadsafe(enqueue_update)
 
         listener = assigned_reference.listen(pickup_listener)
-
-        initial_data = assigned_reference.get() or {}
-
-
-        await queue.put(initial_data)
 
         async def receive():
 
@@ -628,14 +466,17 @@ async def pickup_stream(websocket: WebSocket):
                 message = await websocket.receive_text()
 
                 if message == "logout":
-                    print("Worker Logged out")
                     return
 
         async def pickup():
 
             while True:
 
-                worker_assignments = await queue.get()
+                await queue.get()
+
+                worker_assignments = await asyncio.to_thread(
+                    assigned_reference.get
+                ) or {}
 
                 if not isinstance(worker_assignments, dict):
                     worker_assignments = {}
@@ -647,37 +488,43 @@ async def pickup_stream(websocket: WebSocket):
                     if assigned is not True:
                         continue
 
-                    pickup_data = realtime_db.reference(
-                        f"pickups/pickup_data/{pickup_id}"
-                    ).get()
+                    pickup_data = await asyncio.to_thread(
+                        realtime_db.reference(
+                            f"pickups/pickup_data/{pickup_id}"
+                        ).get
+                    )
 
                     if not pickup_data:
                         continue
 
-                    household_id = pickup_data["household_id"]
+                    household_id = pickup_data.get("household_id")
 
-                    household_data = realtime_db.reference(
-                        f"households/{household_id}"
-                    ).get() or {}
+                    if not household_id:
+                        continue
+
+                    household_data = await asyncio.to_thread(
+                        realtime_db.reference(
+                            f"households/{household_id}"
+                        ).get
+                    ) or {}
 
                     if household_data.get("status") != "assigned":
                         continue
 
                     household = await asyncio.to_thread(
-                        firestore_db.collection("households").document(
-                            household_id
-                        ).get
+                        firestore_db.collection("households")
+                        .document(household_id).get
                     )
 
                     if not household.exists:
                         continue
 
-                    household_profile = household.to_dict()
+                    household_profile = household.to_dict() or {}
 
                     pickup_list.append({
                         "pickupid": pickup_id,
                         "user_id": household_id,
-                        "user_name": household_profile["user_name"],
+                        "user_name": household_profile.get("user_name", ""),
                         "time": pickup_data.get("time"),
                         "coordinates": pickup_data.get("coordinate"),
                         "qna": pickup_data.get("qna")
@@ -687,6 +534,9 @@ async def pickup_stream(websocket: WebSocket):
 
         message_task = asyncio.create_task(receive())
         pickup_task = asyncio.create_task(pickup())
+
+        if not queue.full():
+            queue.put_nowait(True)
 
         done, pending = await asyncio.wait(
             [message_task, pickup_task],
@@ -708,7 +558,7 @@ async def pickup_stream(websocket: WebSocket):
 
         await websocket.close(
             code=1008,
-            reason="Authentication timeout"
+            reason="AUTHENTICATION_TIMEOUT"
         )
 
     except WebSocketDisconnect:
@@ -721,6 +571,17 @@ async def pickup_stream(websocket: WebSocket):
 
         if pickup_task is not None and not pickup_task.done():
             pickup_task.cancel()
+
+        tasks = [
+            task for task in (message_task, pickup_task)
+            if task is not None
+        ]
+
+        if tasks:
+            await asyncio.gather(
+                *tasks,
+                return_exceptions=True
+            )
 
         if listener is not None:
             await asyncio.to_thread(listener.close)

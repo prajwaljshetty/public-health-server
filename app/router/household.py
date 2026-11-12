@@ -1,7 +1,8 @@
-
+# OS :
 import asyncio
 import uuid
 
+# HTTP :
 from fastapi import (
     APIRouter,
     Depends,
@@ -10,10 +11,15 @@ from fastapi import (
     WebSocketDisconnect,
     status,
 )
+
+# Firebase :
 from firebase_admin import db
 from google.cloud.firestore_v1.base_query import FieldFilter
 
+# Database :
 from app.firebase import firestore_db, realtime_db
+
+# Authentication :
 from app.auth import (
     create_access_token,
     create_refresh_token,
@@ -21,7 +27,11 @@ from app.auth import (
     get_current_user,
     get_refresh_token,
 )
+
+# Password :
 from app.hasher import hash_password, verify_password
+
+# Models :
 from app.models.household import (
     HousholdCreate,
     HouseholdLogin,
@@ -33,32 +43,32 @@ router = APIRouter()
 
 @router.post("/create")
 def create(user: HousholdCreate):
+
     users = firestore_db.collection("households").where(
         filter=FieldFilter("phoneno", "==", user.phoneno)
     ).stream()
 
     if next(users, None):
-        return {
-            "status": False,
-            "message": "PHONE_NUMBER_ALREADY_REGISTERED",
-            "user_id": None,
-        }
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="PHONE_NUMBER_ALREADY_REGISTERED"
+        )
 
     user_id = str(uuid.uuid4())
+
     password = hash_password(user.password)
 
     firestore_db.collection("households").document(user_id).set({
         "user_id": user_id,
         "user_name": user.username,
-        "userid": user_id,
         "role": "household",
         "username": user.username,
         "phoneno": user.phoneno,
         "password": password,
     })
 
-    access_token = create_access_token(user_id=user_id)
-    refresh_token = create_refresh_token(user_id=user_id)
+    access_token = create_access_token(user_id =user_id , role = "household")
+    refresh_token = create_refresh_token(user_id = user_id , role = "household")
 
     return {
         "status": True,
@@ -69,35 +79,41 @@ def create(user: HousholdCreate):
     }
 
 @router.post("/login")
-def login(user: HouseholdLogin):
-    users = firestore_db.collection("households").where(
-        filter=FieldFilter("phoneno", "==", user.phoneno)
+def login(login_data: HouseholdLogin):
+
+    user = firestore_db.collection("households").where(
+        filter=FieldFilter("phoneno", "==", login_data.phoneno)
     ).limit(1).stream()
 
-    existing_user = next(users, None)
+    existing_user = next(user, None)
 
     if existing_user is None:
-        return {
-            "status": False,
-            "message": "USER_NOT_FOUND",
-            "user_id": None,
-        }
+        raise HTTPException(
+            status_code=404,
+            detail="USER_NOT_FOUND"
+        )
 
-    user_data = existing_user.to_dict()
+    user_data = existing_user.to_dict() or {}
+
+    if user_data["role"] != "household":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="INSUFFICIENT_PERMISSIONS"
+        )
 
     if not verify_password(
         hashed_password=user_data["password"],
-        password=user.password,
+        password=login_data.password,
     ):
-        return {
-            "status": False,
-            "message": "INCORRECT_PASSWORD",
-            "user_id": None,
-        }
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="INCORRECT_PASSWORD",
+            headers={"WWW-Authenticate": "Bearer"}
+        )
 
     user_id = user_data["user_id"]
-    refresh_token = create_refresh_token(user_id=user_id)
-    access_token = create_access_token(user_id=user_id)
+    refresh_token = create_refresh_token(user_id = user_id , role = "household")
+    access_token = create_access_token(user_id = user_id , role = "household")
 
     return {
         "status": True,
@@ -109,18 +125,24 @@ def login(user: HouseholdLogin):
 
 @router.get("/data")
 def get_data(payload: dict = Depends(get_current_user)):
+
     user_id = payload["sub"]
 
     user = firestore_db.collection("households").document(user_id).get()
 
     if not user.exists:
-        return {
-            "status": False,
-            "message": "User does not exist",
-            "user_data": None,
-        }
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="USER_NOT_FOUND"
+        )
 
     user_data = user.to_dict() or {}
+
+    if payload["role"] != "household" or user_data["role"] != "household":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="INSUFFICIENT_PERMISSIONS"
+        )
 
     household_state = realtime_db.reference(
         f"households/{user_id}"
@@ -143,16 +165,24 @@ def request_pickup(
     household_request_data: HouseholdRequestData,
     payload: dict = Depends(get_current_user),
 ):
+
     user_id = payload["sub"]
 
     user = firestore_db.collection("households").document(user_id).get()
 
     if not user.exists:
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="HOUSEHOLD_NOT_FOUND",
+           status_code=status.HTTP_404_NOT_FOUND,
+            detail="USER_NOT_FOUND"
         )
+    user_data = user.to_dict() or {}
 
+    if payload["role"] != "household" or user_data["role"] != "household":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="INSUFFICIENT_PERMISSIONS"
+        )
+    
     pickup_id = str(uuid.uuid4())
     pickup_time = household_request_data.time.isoformat()
 
@@ -174,7 +204,7 @@ def request_pickup(
         })
 
         return current_data
-
+    
     claimed_household = household_ref.transaction(claim_household)
 
     if (
@@ -235,6 +265,7 @@ def request_pickup(
 
 @router.get("/pickup/data")
 def get_pickup_data(payload: dict = Depends(get_current_user)):
+
     user_id = payload["sub"]
 
     user = firestore_db.collection("households").document(user_id).get()
@@ -242,7 +273,15 @@ def get_pickup_data(payload: dict = Depends(get_current_user)):
     if not user.exists:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="HOUSEHOLD_NOT_FOUND",
+            detail="USER_NOT_FOUND"
+        )
+    
+    user_data = user.to_dict() or {}
+
+    if payload["role"] != "household" or user_data["role"] != "household":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="INSUFFICIENT_PERMISSIONS"
         )
 
     household_state = realtime_db.reference(
@@ -259,6 +298,7 @@ def get_pickup_data(payload: dict = Depends(get_current_user)):
 
         if stored_pickup:
             household_profile = user.to_dict() or {}
+
             pickup_data = {
                 "pickup_id": pickup_id,
                 "user_id": user_id,
@@ -282,6 +322,7 @@ def register_code(
     register_data: RegisterCode,
     payload: dict = Depends(get_current_user),
 ):
+
     user_id = payload["sub"]
 
     user = firestore_db.collection("households").document(user_id).get()
@@ -289,9 +330,17 @@ def register_code(
     if not user.exists:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="HOUSEHOLD_NOT_FOUND",
+            detail="USER_NOT_FOUND"
         )
+    
+    user_data = user.to_dict() or {}
 
+    if payload["role"] != "household" or user_data["role"] != "household":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="INSUFFICIENT_PERMISSIONS"
+        )
+    
     pickup_id = register_data.pickup_id
     code = register_data.code
 
@@ -300,7 +349,6 @@ def register_code(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="PICKUP_CODE_MUST_CONTAIN_EXACTLY_SIX_DIGITS",
         )
-
 
     household_ref = realtime_db.reference(f"households/{user_id}")
 
@@ -384,9 +432,10 @@ def register_code(
 
 @router.post("/refresh")
 def get_access_token(
-    request_data: dict = Depends(get_refresh_token),
+    payload: dict = Depends(get_refresh_token),
 ):
-    user_id = request_data["sub"]
+
+    user_id = payload["sub"]
 
     user = firestore_db.collection("households").document(user_id).get()
 
@@ -395,6 +444,14 @@ def get_access_token(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="USER_NO_LONGER_EXIST",
             headers={"WWW-Authenticate": "Bearer"},
+        )
+    
+    user_data = user.to_dict() or {}
+
+    if payload["role"] != "household" or user_data["role"] != "household":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="INSUFFICIENT_PERMISSIONS"
         )
 
     access_token = create_access_token(user_id=user_id)
@@ -412,6 +469,7 @@ async def pickup_status_stream(
     websocket: WebSocket,
     pickup_id: str,
 ):
+
     await websocket.accept()
 
     listener = None
@@ -498,17 +556,7 @@ async def pickup_status_stream(
                 if data.get("pickup_id") not in (pickup_id, None):
                     continue
 
-                print(
-                {
-                    "status": True,
-                    "pickup_data": {
-                        "pickup_id": data.get("pickup_id"),
-                        "status": data.get("status", "idle"),
-                        "code": data.get("code", "-1"),
-                        "worker_id": data.get("worker_id"),
-                    },
-                }
-                )
+
                 await websocket.send_json({
                     "status": True,
                     "pickup_data": {
