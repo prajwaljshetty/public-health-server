@@ -28,6 +28,7 @@ from app.models.household import (
     HouseholdRequestData,
     RegisterCode,
 )
+from app.realtime import household_status_hub
 
 router = APIRouter()
 
@@ -414,7 +415,8 @@ async def pickup_status_stream(
 ):
     await websocket.accept()
 
-    listener = None
+    user_id = None
+    queue = None
     receive_task = None
     send_task = None
 
@@ -434,12 +436,13 @@ async def pickup_status_stream(
             return
 
         user_id = payload["sub"]
+        queue = household_status_hub.subscribe(user_id)
 
         household_ref = realtime_db.reference(
             f"households/{user_id}"
         )
 
-        initial_data = household_ref.get()
+        initial_data = await asyncio.to_thread(household_ref.get)
 
         if (
             not initial_data
@@ -456,23 +459,6 @@ async def pickup_status_stream(
                 reason="Unauthorized pickup",
             )
             return
-
-        queue = asyncio.Queue()
-        loop = asyncio.get_running_loop()
-
-        def household_listener(event):
-            data = event.data
-
-            if not isinstance(data, dict):
-                data = household_ref.get() or {}
-
-            if isinstance(data, dict):
-                asyncio.run_coroutine_threadsafe(
-                    queue.put(data),
-                    loop,
-                )
-
-        listener = household_ref.listen(household_listener)
 
         await websocket.send_json({
             "status": True,
@@ -498,17 +484,6 @@ async def pickup_status_stream(
                 if data.get("pickup_id") not in (pickup_id, None):
                     continue
 
-                print(
-                {
-                    "status": True,
-                    "pickup_data": {
-                        "pickup_id": data.get("pickup_id"),
-                        "status": data.get("status", "idle"),
-                        "code": data.get("code", "-1"),
-                        "worker_id": data.get("worker_id"),
-                    },
-                }
-                )
                 await websocket.send_json({
                     "status": True,
                     "pickup_data": {
@@ -548,9 +523,18 @@ async def pickup_status_stream(
         pass
 
     finally:
+        tasks_to_finish = []
         for task in (receive_task, send_task):
-            if task is not None and not task.done():
-                task.cancel()
+            if task is not None:
+                if not task.done():
+                    task.cancel()
+                tasks_to_finish.append(task)
 
-        if listener is not None:
-            listener.close()
+        if tasks_to_finish:
+            await asyncio.gather(
+                *tasks_to_finish,
+                return_exceptions=True,
+            )
+
+        if user_id is not None and queue is not None:
+            household_status_hub.unsubscribe(user_id, queue)

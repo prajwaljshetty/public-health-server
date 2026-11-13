@@ -67,12 +67,10 @@ def get_refresh_token( credentials : HTTPAuthorizationCredentials = Depends(secu
     #return payload
     return payload
     
-def create_access_token(user_id: str) -> str:
+def create_access_token(user_id: str, role: str | None = None) -> str:
     # Token expiration: 15 minutes
     now = datetime.now(timezone.utc)
-    expire = now + timedelta(
-        days=configuration["ACCESS_TOKEN_EXPIRE_MINUTES"]
-    )
+    expire = now + timedelta(minutes=configuration["ACCESS_TOKEN_EXPIRE_MINUTES"])
 
     # JWT payload
     payload = {
@@ -81,6 +79,8 @@ def create_access_token(user_id: str) -> str:
         "iat": now,
         "exp": expire,
     }
+    if role:
+        payload["role"] = role
 
     # Generate and sign the JWT
     token = jwt.encode(
@@ -91,7 +91,7 @@ def create_access_token(user_id: str) -> str:
 
     return token
 
-def create_refresh_token(user_id: str) -> str:
+def create_refresh_token(user_id: str, role: str | None = None) -> str:
     # Refresh token expiration: 30 days
     now = datetime.now(timezone.utc)
     expire = now + timedelta(
@@ -105,6 +105,8 @@ def create_refresh_token(user_id: str) -> str:
         "iat": now,
         "exp": expire,
     }
+    if role:
+        payload["role"] = role
 
     # Generate and sign the JWT
     token = jwt.encode(

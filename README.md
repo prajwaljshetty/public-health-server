@@ -57,9 +57,11 @@ Use the following settings for a Render Web Service:
 - Build command: `pip install -r requirements.txt`
 - Start command: `python -m uvicorn app.main:app --host 0.0.0.0 --port $PORT`
 
-Add `JWT_SECRET_KEY` and `FIREBASE_SERVICE_ACCOUNT_JSON` as Render environment
-variables. `FIREBASE_SERVICE_ACCOUNT_JSON` should contain the complete Firebase
-service-account JSON. Do not commit `serviceAccountKey.json`.
+Add `JWT_SECRET_KEY`, `FIREBASE_SERVICE_ACCOUNT_JSON`, `ADMIN_EMAIL`, and
+`ADMIN_PASSWORD` as Render environment variables. `FIREBASE_SERVICE_ACCOUNT_JSON`
+should contain the complete Firebase service-account JSON. The admin credentials
+bootstrap the first hashed Firestore administrator account and must remain
+backend-only. Do not commit `serviceAccountKey.json`.
 
 For local development, you may instead set
 `FIREBASE_SERVICE_ACCOUNT_PATH=serviceAccountKey.json` in `.env`. Relative paths

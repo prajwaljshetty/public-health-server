@@ -161,19 +161,27 @@ def update_worker(user_id: str, worker: WorkerUpdate):
     if not worker_document.exists:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="WORKER_NOT_FOUND")
 
-    name = worker.name.strip()
-    if not name:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="Worker name cannot be empty",
-        )
-
-    updates = {"user_name": name}
+    data = worker_document.to_dict() or {}
+    name = data.get("user_name", "")
+    updates = {}
+    if worker.name is not None:
+        name = worker.name.strip()
+        if not name:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Worker name cannot be empty",
+            )
+        updates["user_name"] = name
     if worker.password:
         updates["password"] = hash_password(worker.password)
 
+    if not updates:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="NO_UPDATES_PROVIDED",
+        )
+
     worker_reference.update(updates)
-    data = worker_document.to_dict() or {}
     return {
         "status": True,
         "message": "Worker updated successfully",
