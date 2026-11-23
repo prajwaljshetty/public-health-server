@@ -20,3 +20,11 @@ class PickupAcceptanceRequest(BaseModel):
 
 class PickupAssignmentRequest(BaseModel):
     worker_id: str = Field(min_length=1)
+
+class PickupCollectionConfirmation(BaseModel):
+    pickup_id: str
+    code: str = Field(
+                    min_length=6 , 
+                    max_length= 6 , 
+                    pattern= r"^[0-9]{6}$"
+                )

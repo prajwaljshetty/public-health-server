@@ -2,6 +2,9 @@
 import asyncio
 import uuid
 
+# Date Time :
+from datetime import datetime, timezone
+
 # HTTP :
 from fastapi import (
     APIRouter,
@@ -62,7 +65,6 @@ def create(user: HousholdCreate):
         "user_id": user_id,
         "user_name": user.username,
         "role": "household",
-        "username": user.username,
         "phoneno": user.phoneno,
         "password": password,
     })
@@ -123,6 +125,43 @@ def login(login_data: HouseholdLogin):
         "refresh_token": refresh_token,
     }
 
+@router.post("/refresh")
+def get_access_token(
+    payload: dict = Depends(get_refresh_token),
+):
+
+    user_id = payload["sub"]
+
+    user = firestore_db.collection("households").document(user_id).get()
+
+    if not user.exists:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="USER_NO_LONGER_EXIST",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    
+    user_data = user.to_dict() or {}
+
+    if payload["role"] != "household" or user_data["role"] != "household":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="INSUFFICIENT_PERMISSIONS"
+        )
+
+   
+
+    return {
+        "status": True,
+        "message": "Access token refreshed successfully",
+        "access_token" : create_access_token(
+            user_id=user_id,
+            role="household"
+        ),
+        "token_type": "bearer",
+        "expires_in": 900,
+    }
+
 @router.get("/data")
 def get_data(payload: dict = Depends(get_current_user)):
 
@@ -138,7 +177,7 @@ def get_data(payload: dict = Depends(get_current_user)):
 
     user_data = user.to_dict() or {}
 
-    if payload["role"] != "household" or user_data["role"] != "household":
+    if payload["role"] != "household" or user_data.get("role") != "household":
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="INSUFFICIENT_PERMISSIONS"
@@ -154,12 +193,13 @@ def get_data(payload: dict = Depends(get_current_user)):
         "user_data": {
             "user_id": user_id,
             "role": "household",
-            "user_name": user_data["user_name"],
-            "phoneno": user_data["phoneno"],
+            "user_name": user_data.get("user_name"),
+            "phoneno": user_data.get("phoneno"),
             "pickup_status": household_state.get("status", "idle"),
         },
     }
 
+# Pickuo :
 @router.post("/pickup/request")
 def request_pickup(
     household_request_data: HouseholdRequestData,
@@ -172,40 +212,47 @@ def request_pickup(
 
     if not user.exists:
         raise HTTPException(
-           status_code=status.HTTP_404_NOT_FOUND,
+            status_code=status.HTTP_404_NOT_FOUND,
             detail="USER_NOT_FOUND"
         )
+
     user_data = user.to_dict() or {}
 
-    if payload["role"] != "household" or user_data["role"] != "household":
+    if (
+        payload.get("role") != "household"
+        or user_data.get("role") != "household"
+    ):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="INSUFFICIENT_PERMISSIONS"
         )
-    
+
     pickup_id = str(uuid.uuid4())
     pickup_time = household_request_data.time.isoformat()
+    requested_at = datetime.now(timezone.utc).isoformat()
 
-    household_ref = realtime_db.reference(f"households/{user_id}")
+    household_ref = realtime_db.reference(
+        f"households/{user_id}"
+    )
 
     def claim_household(current_data):
+
         current_data = current_data or {}
 
-        current_status = current_data.get("status", "idle")
-
-        if current_status != "idle":
+        if current_data.get("status", "idle") != "idle":
             return current_data
 
         current_data.update({
             "status": "requested",
             "code": "-1",
             "pickup_id": pickup_id,
-            "worker_id": None,
         })
 
         return current_data
-    
-    claimed_household = household_ref.transaction(claim_household)
+
+    claimed_household = household_ref.transaction(
+        claim_household
+    )
 
     if (
         not claimed_household
@@ -214,28 +261,38 @@ def request_pickup(
     ):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail="HOUSEHOLD_ALREADY_HAS_ACTIVE_PICKUP",
+            detail="HOUSEHOLD_ALREADY_HAS_ACTIVE_PICKUP"
         )
 
     pickup_data = {
         "pickup_id": pickup_id,
         "household_id": user_id,
         "time": pickup_time,
-        "coordinate": {
+        "coordinates": {
             "latitude": household_request_data.coordinate.latitude,
             "longitude": household_request_data.coordinate.longitude,
         },
         "qna": household_request_data.qna,
     }
 
+    audit_data = {
+        "household_id": user_id,
+        "pickup_id": pickup_id,
+        "requested_at": requested_at,
+    }
+
     try:
+
         realtime_db.reference().update({
             f"pickups/pickup_data/{pickup_id}": pickup_data,
             f"pickups/requested/{pickup_id}": True,
+            f"audit/requested/{pickup_id}": audit_data,
         })
 
     except Exception:
+
         def rollback_household(current_data):
+
             if (
                 current_data
                 and current_data.get("pickup_id") == pickup_id
@@ -245,7 +302,6 @@ def request_pickup(
                     "status": "idle",
                     "code": "-1",
                     "pickup_id": None,
-                    "worker_id": None,
                 })
 
             return current_data
@@ -254,13 +310,14 @@ def request_pickup(
 
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="PICKUP_REQUEST_FAILED",
+            detail="PICKUP_REQUEST_FAILED"
         )
 
     return {
         "status": True,
         "message": "Pickup requested successfully",
-        "pickupid": pickup_id,
+        "pickup_id": pickup_id,
+        "requested_at": requested_at,
     }
 
 @router.get("/pickup/data")
@@ -275,10 +332,13 @@ def get_pickup_data(payload: dict = Depends(get_current_user)):
             status_code=status.HTTP_404_NOT_FOUND,
             detail="USER_NOT_FOUND"
         )
-    
+
     user_data = user.to_dict() or {}
 
-    if payload["role"] != "household" or user_data["role"] != "household":
+    if (
+        payload["role"] != "household"
+        or user_data.get("role") != "household"
+    ):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="INSUFFICIENT_PERMISSIONS"
@@ -304,7 +364,7 @@ def get_pickup_data(payload: dict = Depends(get_current_user)):
                 "user_id": user_id,
                 "user_name": household_profile.get("user_name"),
                 "time": stored_pickup.get("time"),
-                "coordinate": stored_pickup.get("coordinate"),
+                "coordinates": stored_pickup.get("coordinates"),
                 "qna": stored_pickup.get("qna", []),
             }
 
@@ -313,7 +373,6 @@ def get_pickup_data(payload: dict = Depends(get_current_user)):
         "message": "Pickup data fetched successfully",
         "pickup_status": household_state.get("status", "idle"),
         "pickup_id": pickup_id,
-        "code": household_state.get("code", "-1"),
         "pickup_data": pickup_data,
     }
 
@@ -322,7 +381,6 @@ def register_code(
     register_data: RegisterCode,
     payload: dict = Depends(get_current_user),
 ):
-
     user_id = payload["sub"]
 
     user = firestore_db.collection("households").document(user_id).get()
@@ -332,25 +390,30 @@ def register_code(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="USER_NOT_FOUND"
         )
-    
+
     user_data = user.to_dict() or {}
 
-    if payload["role"] != "household" or user_data["role"] != "household":
+    if (
+        payload.get("role") != "household"
+        or user_data.get("role") != "household"
+    ):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="INSUFFICIENT_PERMISSIONS"
         )
-    
+
     pickup_id = register_data.pickup_id
     code = register_data.code
 
     if not code.isdigit() or len(code) != 6:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="PICKUP_CODE_MUST_CONTAIN_EXACTLY_SIX_DIGITS",
+            detail="PICKUP_CODE_MUST_CONTAIN_EXACTLY_SIX_DIGITS"
         )
 
-    household_ref = realtime_db.reference(f"households/{user_id}")
+    household_ref = realtime_db.reference(
+        f"households/{user_id}"
+    )
 
     pickup_data = realtime_db.reference(
         f"pickups/pickup_data/{pickup_id}"
@@ -359,17 +422,19 @@ def register_code(
     if not pickup_data:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="PICKUP_NOT_FOUND",
+            detail="PICKUP_NOT_FOUND"
         )
-
 
     if pickup_data.get("household_id") != user_id:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="UNAUTHORIZED_PICKUP",
+            detail="UNAUTHORIZED_PICKUP"
         )
 
+    code_hash = hash_password(code)
+
     def register_household_code(current_data):
+
         if not current_data:
             return current_data
 
@@ -379,8 +444,7 @@ def register_code(
         ):
             return current_data
 
-        current_data["code"] = code
-        current_data["status"] = "accepted"
+        current_data["code"] = code_hash
 
         return current_data
 
@@ -392,48 +456,24 @@ def register_code(
         not registered_data
         or registered_data.get("pickup_id") != pickup_id
         or registered_data.get("status") != "accepted"
-        or registered_data.get("code") != code
+        or not verify_password(
+            code,
+            registered_data.get("code", "")
+        )
     ):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail="PICKUP_NOT_AVAILABLE_FOR_CODE_REGISTRATION",
-        )
-
-    try:
-        realtime_db.reference().update({
-            f"pickups/assigned/{pickup_id}": None,
-            f"pickups/accepted/{pickup_id}": True,
-        })
-
-    except Exception:
-        def rollback_code(current_data):
-            if (
-                current_data
-                and current_data.get("pickup_id") == pickup_id
-                and current_data.get("status") == "accepted"
-                and current_data.get("code") == code
-            ):
-                current_data["status"] = "assigned"
-                current_data["code"] = "-1"
-
-            return current_data
-
-        household_ref.transaction(rollback_code)
-
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="PICKUP_CODE_REGISTRATION_FAILED",
+            detail="PICKUP_NOT_AVAILABLE_FOR_CODE_REGISTRATION"
         )
 
     return {
         "status": True,
         "message": "Pickup code registered successfully",
+        "pickup_id": pickup_id
     }
 
-@router.post("/refresh")
-def get_access_token(
-    payload: dict = Depends(get_refresh_token),
-):
+@router.get("/points")
+def get_points(payload: dict = Depends(get_current_user)):
 
     user_id = payload["sub"]
 
@@ -441,27 +481,29 @@ def get_access_token(
 
     if not user.exists:
         raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="USER_NO_LONGER_EXIST",
-            headers={"WWW-Authenticate": "Bearer"},
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="USER_NOT_FOUND"
         )
-    
+
     user_data = user.to_dict() or {}
 
-    if payload["role"] != "household" or user_data["role"] != "household":
+    if (
+        payload.get("role") != "household"
+        or user_data.get("role") != "household"
+    ):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="INSUFFICIENT_PERMISSIONS"
         )
 
-    access_token = create_access_token(user_id=user_id)
+    household_data = realtime_db.reference(
+        f"households/{user_id}"
+    ).get() or {}
 
     return {
         "status": True,
-        "message": "Access token refreshed successfully",
-        "access_token": access_token,
-        "token_type": "bearer",
-        "expires_in": 900,
+        "message": "Points fetched successfully",
+        "points": household_data.get("points", 0)
     }
 
 @router.websocket("/pickup/status/{pickup_id}")
@@ -488,6 +530,13 @@ async def pickup_status_stream(
             await websocket.close(
                 code=1008,
                 reason="Invalid access token",
+            )
+            return
+
+        if payload.get("role") != "household":
+            await websocket.close(
+                code=1008,
+                reason="Insufficient permissions",
             )
             return
 
@@ -538,7 +587,6 @@ async def pickup_status_stream(
                 "pickup_id": initial_data.get("pickup_id"),
                 "status": initial_data.get("status", "idle"),
                 "code": initial_data.get("code", "-1"),
-                "worker_id": initial_data.get("worker_id"),
             },
         })
 
@@ -553,9 +601,14 @@ async def pickup_status_stream(
             while True:
                 data = await queue.get()
 
-                if data.get("pickup_id") not in (pickup_id, None):
+                if (
+                    data.get("pickup_id") != pickup_id
+                    and not (
+                        data.get("status") == "idle"
+                        and data.get("pickup_id") is None
+                    )
+                ):
                     continue
-
 
                 await websocket.send_json({
                     "status": True,
@@ -563,7 +616,6 @@ async def pickup_status_stream(
                         "pickup_id": data.get("pickup_id"),
                         "status": data.get("status", "idle"),
                         "code": data.get("code", "-1"),
-                        "worker_id": data.get("worker_id"),
                     },
                 })
 
