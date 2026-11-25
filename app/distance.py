@@ -58,6 +58,7 @@ async def calculate_road_distance( base_address: dict , household_address: dict 
         routes = data.get("routes", [])
 
         if not routes:
+            
             raise HTTPException(
                 status_code=status.HTTP_502_BAD_GATEWAY,
                 detail="ROAD_ROUTE_NOT_FOUND"
